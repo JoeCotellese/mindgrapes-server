@@ -911,9 +911,7 @@ def test_review_merge_surface_shows_deferred_note(client, admin, monkeypatch):
     assert "41 low-impact pairs deferred" in body
 
 
-def test_review_merge_surface_omits_deferred_note_when_zero(
-    client, admin, monkeypatch
-):
+def test_review_merge_surface_omits_deferred_note_when_zero(client, admin, monkeypatch):
     client.force_login(admin)
     _patch_review(
         monkeypatch,

@@ -335,14 +335,18 @@ def test_resolve_merge_candidate_confirm_merges_into_chosen_winner():
     assert res["winner_id"] == winner
     # The loser now points at the winner; the candidate is no longer pending.
     assert (
-        _scalar("select merged_into::text from brain.entities where id=%s::uuid", [loser])
+        _scalar(
+            "select merged_into::text from brain.entities where id=%s::uuid", [loser]
+        )
         == winner
     )
     assert (
         _scalar("select status from brain.merge_candidates where id=%s::uuid", [mc])
         == "merged"
     )
-    assert mc not in {r["id"] for r in review_queue("merge_candidates")["merge_candidates"]}
+    assert mc not in {
+        r["id"] for r in review_queue("merge_candidates")["merge_candidates"]
+    }
     assert pending_reviews()["merge_candidates"] == before - 1
 
 
@@ -356,8 +360,12 @@ def test_resolve_merge_candidate_reject_keeps_entities_separate():
 
     assert res["decision"] == "reject"
     # Neither entity was merged; the candidate is stamped kept_separate.
-    assert _scalar("select merged_into from brain.entities where id=%s::uuid", [a]) is None
-    assert _scalar("select merged_into from brain.entities where id=%s::uuid", [b]) is None
+    assert (
+        _scalar("select merged_into from brain.entities where id=%s::uuid", [a]) is None
+    )
+    assert (
+        _scalar("select merged_into from brain.entities where id=%s::uuid", [b]) is None
+    )
     assert (
         _scalar("select status from brain.merge_candidates where id=%s::uuid", [mc])
         == "kept_separate"
@@ -392,7 +400,11 @@ def test_attach_entity_names_enriches_merge_candidates():
     _seed_merge_candidate(a, b)
     rows = review_queue("merge_candidates")["merge_candidates"]
     enriched = attach_entity_names(rows, "merge_candidates")
-    seeded = next(r for r in enriched if {r["entity_a_name"], r["entity_b_name"]} == {"Acme", "Acme Inc"})
+    seeded = next(
+        r
+        for r in enriched
+        if {r["entity_a_name"], r["entity_b_name"]} == {"Acme", "Acme Inc"}
+    )
     assert seeded["entity_a_kind"] == "org"
     assert seeded["entity_b_kind"] == "org"
 

@@ -135,13 +135,16 @@ def test_review_queue_result_advertises_deferred_count():
 
     props = ReviewQueueResult.model_json_schema()["properties"]
     assert "merge_candidates_deferred" in props
-    assert ReviewQueueResult(
-        merge_candidates=[],
-        low_confidence_claims=[],
-        contradictions=[],
-        disambiguations=[],
-        proposed_corrections=[],
-    ).merge_candidates_deferred == 0
+    assert (
+        ReviewQueueResult(
+            merge_candidates=[],
+            low_confidence_claims=[],
+            contradictions=[],
+            disambiguations=[],
+            proposed_corrections=[],
+        ).merge_candidates_deferred
+        == 0
+    )
 
 
 def test_review_queue_result_carries_jsonb_payloads():
