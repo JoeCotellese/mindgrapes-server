@@ -1,0 +1,15 @@
+# ABOUTME: Pre-commit hook config; runs a trufflehog secret scan on staged files.
+# ABOUTME: Blocks commits that introduce verified or unverified secrets (keys, tokens).
+#
+# Setup: `brew install trufflehog` (system binary) then `pre-commit install`.
+# Scans only staged files. Result levels: verified (live) + unverified (detected,
+# e.g. a private key); "unknown" is excluded so the deliberate dev `devpassword`
+# in the compose files doesn't trip every commit.
+repos:
+  - repo: local
+    hooks:
+      - id: trufflehog
+        name: trufflehog secret scan
+        entry: bash -c 'trufflehog filesystem "$@" --no-update --fail --results=verified,unverified' --
+        language: system
+        pass_filenames: true

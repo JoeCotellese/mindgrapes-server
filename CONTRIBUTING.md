@@ -29,12 +29,15 @@ Two rules that surprise people:
 
 ## Dev setup
 
-Prerequisites: Docker, [uv](https://docs.astral.sh/uv/), Python 3.12.
+Prerequisites: Docker, [uv](https://docs.astral.sh/uv/), Python 3.12, and
+[trufflehog](https://github.com/trufflesecurity/trufflehog) (`brew install
+trufflehog`) for the secret-scan hook.
 
 ```sh
 git clone https://github.com/JoeCotellese/mindgrapes-server
 cd mindgrapes-server
 cd web && uv sync && cd ..            # Python deps (for running tests locally)
+uv run --project web pre-commit install   # secret-scan hook (needs trufflehog on PATH)
 cp .env.dev.example .env.dev          # dev-only placeholders, gitignored
 make dev-up                           # isolated dev stack: postgres + web + mcp + consolidation + caddy
 ```
@@ -77,6 +80,7 @@ abstractions.
 2. Keep the diff scoped to one issue.
 3. Reference the issue in the PR description.
 4. Never commit secrets — `.env` and `.env.dev` are gitignored and must stay
-   that way.
+   that way. A `pre-commit` trufflehog hook scans staged files for leaked keys
+   and tokens; don't bypass it with `--no-verify`.
 
 Security issues: do **not** open a public issue — see [SECURITY.md](SECURITY.md).
