@@ -1,0 +1,50 @@
+{% comment %}Merge-confirm modal, rendered (hidden) inside each pending merge row. The row's
+   "Merge…" button adds is-active; the two confirm buttons post the chosen winner
+   and swap the whole row (modal included) to its resolved state. The user always
+   picks which canonical name to keep, so the wrong one is never silently demoted.{% endcomment %}
+<div class="modal" id="merge-modal-{{ item.row_id }}" role="dialog" aria-modal="true"
+     aria-labelledby="merge-modal-title-{{ item.row_id }}">
+  <div class="modal-background"
+       hx-on:click="document.getElementById('merge-modal-{{ item.row_id }}').classList.remove('is-active')"></div>
+  <div class="modal-card">
+    <header class="modal-card-head">
+      <p class="modal-card-title" id="merge-modal-title-{{ item.row_id }}">Merge these two entities?</p>
+      <button class="delete" aria-label="close"
+              hx-on:click="document.getElementById('merge-modal-{{ item.row_id }}').classList.remove('is-active')"></button>
+    </header>
+    <section class="modal-card-body">
+      <p class="mb-3">Choose which name to <strong>keep</strong>. The other becomes an
+        alias — its mentions and claims still resolve, but the kept name is canonical.</p>
+      <div class="columns">
+        <div class="column">
+          <p class="has-text-weight-semibold">{{ item.entity_a_name|default:"(unknown)" }}</p>
+          <p class="has-text-grey is-size-7">{{ item.entity_a_kind }}</p>
+        </div>
+        <div class="column">
+          <p class="has-text-weight-semibold">{{ item.entity_b_name|default:"(unknown)" }}</p>
+          <p class="has-text-grey is-size-7">{{ item.entity_b_kind }}</p>
+        </div>
+      </div>
+    </section>
+    <footer class="modal-card-foot">
+      <button class="button is-success"
+              hx-post="/review/merge_candidates/{{ item.row_id }}/confirm"
+              hx-vals='{"winner_id": "{{ item.entity_a }}"}'
+              hx-target="#review-item-{{ item.row_id }}" hx-swap="outerHTML"
+              aria-label="Merge and keep {{ item.entity_a_name }}; {{ item.entity_b_name }} becomes an alias">
+        Keep “{{ item.entity_a_name|default:"A" }}”
+      </button>
+      <button class="button is-success"
+              hx-post="/review/merge_candidates/{{ item.row_id }}/confirm"
+              hx-vals='{"winner_id": "{{ item.entity_b }}"}'
+              hx-target="#review-item-{{ item.row_id }}" hx-swap="outerHTML"
+              aria-label="Merge and keep {{ item.entity_b_name }}; {{ item.entity_a_name }} becomes an alias">
+        Keep “{{ item.entity_b_name|default:"B" }}”
+      </button>
+      <button class="button"
+              hx-on:click="document.getElementById('merge-modal-{{ item.row_id }}').classList.remove('is-active')">
+        Cancel
+      </button>
+    </footer>
+  </div>
+</div>

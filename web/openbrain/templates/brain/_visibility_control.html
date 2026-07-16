@@ -1,0 +1,32 @@
+{% comment %}Owner-only share toggle (US-7). Posts the TARGET visibility and swaps itself
+   with the refreshed control the view returns. Forward-only un-share microcopy:
+   flipping back to private stops future reads but claws nothing back.{% endcomment %}
+<div id="visibility-control" class="field">
+  {% if experience.visibility == "shared" %}
+    <p class="mb-2">
+      <span class="tag is-info">shared</span>
+      Visible to other members.
+    </p>
+    <button class="button is-small"
+            hx-post="/experience/{{ experience.id }}/visibility"
+            hx-vals='{"visibility": "private"}'
+            hx-target="#visibility-control"
+            hx-swap="outerHTML">
+      Make private
+    </button>
+    <p class="help">Making it private stops other members seeing it from now on; it
+      does not claw back anything already seen or derived.</p>
+  {% else %}
+    <p class="mb-2">
+      <span class="tag">private</span>
+      Only you can see this.
+    </p>
+    <button class="button is-small"
+            hx-post="/experience/{{ experience.id }}/visibility"
+            hx-vals='{"visibility": "shared"}'
+            hx-target="#visibility-control"
+            hx-swap="outerHTML">
+      Share with members
+    </button>
+  {% endif %}
+</div>

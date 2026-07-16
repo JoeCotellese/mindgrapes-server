@@ -1,0 +1,126 @@
+{% comment %}One review row, keyed by item.row_id so an action can swap it via outerHTML.
+   Resolved / already-handled rows render a quiet confirmation; otherwise a
+   surface-specific body with right-aligned decision buttons (text labels, never
+   icon-only; destructive actions carry an aria-label naming the target). The two
+   display-only surfaces deep-link out and offer no inline mutation.{% endcomment %}
+<div class="box" id="review-item-{{ item.row_id }}">
+  {% if item.already_handled %}
+    <p class="has-text-grey">✓ Already handled — nothing to do here.</p>
+
+  {% elif item.resolved %}
+    <p class="has-text-grey">✓ Done.</p>
+
+  {% elif surface == "merge_candidates" %}
+    <div class="level is-mobile">
+      <div class="level-left">
+        <div>
+          <p class="has-text-grey is-size-7">Possible duplicate · similarity {{ item.similarity|floatformat:2 }}</p>
+          <p>
+            <strong>{{ item.entity_a_name|default:"(unknown)" }}</strong>
+            <span class="has-text-grey is-size-7">({{ item.entity_a_count|default:0 }})</span>
+            <span class="has-text-grey is-size-7">{{ item.entity_a_kind }}</span>
+            <span class="has-text-grey">↔</span>
+            <strong>{{ item.entity_b_name|default:"(unknown)" }}</strong>
+            <span class="has-text-grey is-size-7">({{ item.entity_b_count|default:0 }})</span>
+            <span class="has-text-grey is-size-7">{{ item.entity_b_kind }}</span>
+          </p>
+          <p class="has-text-grey is-size-7">Merging is reversible — you can split them back later.</p>
+        </div>
+      </div>
+      <div class="level-right">
+        <div class="buttons">
+          <button class="button is-link"
+                  hx-on:click="document.getElementById('merge-modal-{{ item.row_id }}').classList.add('is-active')"
+                  aria-label="Merge {{ item.entity_a_name }} and {{ item.entity_b_name }}">
+            Merge…
+          </button>
+          <button class="button"
+                  hx-post="/review/merge_candidates/{{ item.row_id }}/reject"
+                  hx-target="#review-item-{{ item.row_id }}" hx-swap="outerHTML"
+                  aria-label="Keep {{ item.entity_a_name }} and {{ item.entity_b_name }} separate">
+            Keep separate
+          </button>
+        </div>
+      </div>
+    </div>
+    {% comment %}Evidence toggle + target sit OUTSIDE the .level so the wide,
+       full-width evidence block isn't trapped in a flex item (.level-left) that
+       grows with its content and overflows the card. hx-get fires once (loaded
+       once); the click handler toggles visibility and keeps aria-expanded
+       truthful on every click.{% endcomment %}
+    <button class="button is-ghost is-small px-0" aria-expanded="false"
+            aria-controls="evidence-{{ item.row_id }}"
+            hx-get="/review/merge_candidates/{{ item.row_id }}/evidence"
+            hx-target="#evidence-{{ item.row_id }}" hx-swap="innerHTML"
+            hx-trigger="click once"
+            hx-on:click="const c=document.getElementById('evidence-{{ item.row_id }}'); const open=this.getAttribute('aria-expanded')==='true'; this.setAttribute('aria-expanded', open?'false':'true'); c.classList.toggle('is-hidden', open);">
+      Show evidence
+    </button>
+    <div id="evidence-{{ item.row_id }}"></div>
+    {% include "brain/_merge_modal.html" with item=item %}
+
+  {% elif surface == "proposed_corrections" %}
+    <div class="level is-mobile">
+      <div class="level-left">
+        <div>
+          <p>
+            <span class="tag is-light">{{ item.target_kind }}</span>
+            <strong>{{ item.suggested_change.action|default:"correction" }}</strong>
+          </p>
+          {% if item.reason %}<p class="has-text-grey is-size-7">{{ item.reason }}</p>{% endif %}
+          <p class="has-text-grey is-size-7">target {{ item.target_id }}</p>
+        </div>
+      </div>
+      <div class="level-right">
+        <div class="buttons">
+          <button class="button is-success"
+                  hx-post="/review/proposed_corrections/{{ item.row_id }}/apply"
+                  hx-target="#review-item-{{ item.row_id }}" hx-swap="outerHTML"
+                  aria-label="Apply proposed correction to this {{ item.target_kind }}">
+            Apply
+          </button>
+          <button class="button is-danger is-light"
+                  hx-post="/review/proposed_corrections/{{ item.row_id }}/reject"
+                  hx-target="#review-item-{{ item.row_id }}" hx-swap="outerHTML"
+                  aria-label="Reject proposed correction to this {{ item.target_kind }}">
+            Reject
+          </button>
+        </div>
+      </div>
+    </div>
+
+  {% elif surface == "disambiguations" %}
+    <p class="mb-2">{{ item.question }}</p>
+    <div class="buttons">
+      {% for opt in item.options %}
+        <button class="button is-success is-light"
+                hx-post="/review/disambiguations/{{ item.row_id }}/resolve"
+                hx-vals='{"choice": "{{ opt.label|escapejs }}"}'
+                hx-target="#review-item-{{ item.row_id }}" hx-swap="outerHTML"
+                aria-label="Resolve as {{ opt.label }}">
+          {{ opt.label }}
+        </button>
+      {% endfor %}
+    </div>
+
+  {% elif surface == "low_confidence_claims" %}
+    <p>
+      <a href="/entity/{{ item.subject_id }}">{{ item.subject_name|default:"(entity)" }}</a>:
+      {{ item.predicate }}
+    </p>
+    <p class="has-text-grey is-size-7">
+      Inferred · confidence {{ item.confidence|floatformat:2 }}.
+      Resolve with your AI assistant (retract or correct the claim).
+    </p>
+
+  {% elif surface == "contradictions" %}
+    <p>
+      <a href="/entity/{{ item.subject_id }}">{{ item.subject_name|default:"(entity)" }}</a>:
+      {{ item.predicate }}
+      <span class="tag is-warning is-light">superseded</span>
+    </p>
+    <p class="has-text-grey is-size-7">
+      A newer claim supersedes this one. Resolve with your AI assistant.
+    </p>
+  {% endif %}
+</div>

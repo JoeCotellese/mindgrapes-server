@@ -1,0 +1,42 @@
+{% comment %}Delete-confirm modal (US-6). The usage counts are the emotional content: they
+   tell the owner exactly what this soft-delete touches before they commit. Soft
+   un-delete isn't offered, but the row stays reachable with a deleted banner.{% endcomment %}
+<div class="modal is-active" id="delete-modal" role="dialog" aria-modal="true"
+     aria-labelledby="delete-modal-title">
+  <div class="modal-background" hx-on:click="this.closest('#delete-modal').remove()"></div>
+  <div class="modal-card">
+    <header class="modal-card-head">
+      <p class="modal-card-title" id="delete-modal-title">Delete this experience?</p>
+      <button class="delete" aria-label="close"
+              hx-on:click="this.closest('#delete-modal').remove()"></button>
+    </header>
+    <section class="modal-card-body">
+      {% if usage %}
+        <p>This experience is the source of
+          <strong>{{ usage.claim_count }}</strong> claim{{ usage.claim_count|pluralize }}
+          and mentions
+          <strong>{{ usage.mentioned_entity_count }}</strong>
+          entit{{ usage.mentioned_entity_count|pluralize:"y,ies" }}.</p>
+        {% if usage.mentioned_entity_names %}
+          <p class="has-text-grey">{{ usage.mentioned_entity_names|join:", " }}</p>
+        {% endif %}
+        <p class="mt-3">Claims whose only live source is this experience will be
+          retracted. It stays reachable afterwards with a deleted banner.</p>
+      {% else %}
+        <p>This experience will be soft-deleted. It stays reachable afterwards with
+          a deleted banner.</p>
+      {% endif %}
+    </section>
+    <footer class="modal-card-foot">
+      <button class="button is-danger"
+              hx-post="/experience/{{ experience.id }}/delete"
+              hx-swap="none">
+        Delete
+      </button>
+      <button class="button"
+              hx-on:click="this.closest('#delete-modal').remove()">
+        Cancel
+      </button>
+    </footer>
+  </div>
+</div>

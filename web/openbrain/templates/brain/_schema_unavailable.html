@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}Brain — Mind Grapes{% endblock %}
+{% block content %}
+  <h1 class="title">Brain not available</h1>
+  <div class="content">
+    <p>The <code>brain.*</code> schema isn't reachable from this environment, so
+    there's nothing to show. This is expected on the local sqlite default; the
+    deployed app runs against Postgres with the schema loaded.</p>
+  </div>
+{% endblock %}

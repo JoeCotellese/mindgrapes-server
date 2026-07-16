@@ -1,0 +1,7 @@
+{% comment %}Inbox-zero banner. On a fresh load review.html renders its own; this partial is
+   swapped into #review-flash out-of-band when an action clears the last item.{% endcomment %}
+<div id="review-flash"{% if oob %} hx-swap-oob="true"{% endif %}>
+  <div class="notification is-success is-light" role="status">
+    <strong>Inbox zero.</strong> Nothing left to review. 🎉
+  </div>
+</div>

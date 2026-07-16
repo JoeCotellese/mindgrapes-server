@@ -1,0 +1,21 @@
+{% comment %}One page of an entity's mention timeline. Re-rendered by the htmx
+  'Load more' button, which replaces itself (outerHTML) with the next page's
+  cards plus a fresh button, so pages append in order. Expects: mentions,
+  has_more, next_offset, entity_id, mentions_limit.{% endcomment %}
+{% for m in mentions %}
+  <article class="box">
+    <p class="is-size-7 has-text-grey mb-2">
+      <a href="/experience/{{ m.experience_id }}">
+        {% if m.captured_at %}{{ m.captured_at|date:"M j, Y" }}{% else %}View experience{% endif %}
+      </a>
+    </p>
+    <p>{{ m.content_excerpt|safe }}</p>
+  </article>
+{% endfor %}
+{% if has_more %}
+  <button class="button is-light"
+          hx-get="/entity/{{ entity_id }}/mentions?offset={{ next_offset }}&amp;limit={{ mentions_limit }}"
+          hx-swap="outerHTML">
+    Load more
+  </button>
+{% endif %}

@@ -1,0 +1,33 @@
+{% comment %}One page of the recent feed, bucketed by day (#135). Each non-empty
+  bucket is a labelled <section> with an <h2> header and its own <ul id="rows-
+  <slug>">; rows reuse _feed_row.html. Doubles as the htmx Load-more response,
+  like _feed_page.html does for the List view.
+
+  Header-aware paging: the Load-more button carries `cont` = the slug of the
+  bucket that ended the previous page. When this page's first bucket continues
+  it, those rows are emitted as out-of-band appends (oob_target) into the
+  existing #rows-<slug> list so no duplicate header is rendered; the rest of the
+  response (new sections + new button) swaps into the old button's place.
+  Expects: groups (slug/label/rows), has_more, next_offset, feed_limit, cont,
+  next_cont.{% endcomment %}
+{% for group in groups %}
+  {% if forloop.first and group.slug == cont %}
+    {% for exp in group.rows %}{% include "brain/_feed_row.html" with oob_target=group.slug %}{% endfor %}
+  {% else %}
+    <section aria-labelledby="bucket-{{ group.slug }}">
+      <h2 class="title is-5" id="bucket-{{ group.slug }}">{{ group.label }}</h2>
+      <ul class="feed" id="rows-{{ group.slug }}">
+        {% for exp in group.rows %}{% include "brain/_feed_row.html" %}{% endfor %}
+      </ul>
+    </section>
+  {% endif %}
+{% endfor %}
+{% if has_more %}
+  <div id="feed-more-wrap">
+    <button class="button is-light" id="feed-more"
+            hx-get="/recent?view=timeline&amp;offset={{ next_offset }}&amp;limit={{ feed_limit }}&amp;cont={{ next_cont }}"
+            hx-target="#feed-more-wrap" hx-swap="outerHTML">
+      Load more
+    </button>
+  </div>
+{% endif %}

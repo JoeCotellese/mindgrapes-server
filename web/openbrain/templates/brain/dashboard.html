@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — Mind Grapes{% endblock %}
+{% block main_column %}is-10{% endblock %}
+{% block content %}
+  <h1 class="title mb-4">Your brain</h1>
+
+  {% if summary and summary.experience_count %}
+    <nav class="level box">
+      <div class="level-item has-text-centered">
+        <div>
+          <p class="heading">Experiences</p>
+          <p class="title">{{ summary.experience_count }}</p>
+        </div>
+      </div>
+      <div class="level-item has-text-centered">
+        <div>
+          <p class="heading">Entities</p>
+          <p class="title">{{ summary.entity_count }}</p>
+        </div>
+      </div>
+      <div class="level-item has-text-centered">
+        <div>
+          <p class="heading">Claims</p>
+          <p class="title">{{ summary.claim_count }}</p>
+        </div>
+      </div>
+    </nav>
+
+    {% if summary.time_range_earliest %}
+      <p class="has-text-grey is-size-7 mb-5">
+        Spanning {{ summary.time_range_earliest|date:"M j, Y" }} –
+        {{ summary.time_range_latest|date:"M j, Y" }}
+      </p>
+    {% endif %}
+
+    <div class="columns">
+      <div class="column">
+        <h2 class="title is-5">Top entities</h2>
+        {% if summary.top_entities %}
+          <div class="tags">
+            {% for e in summary.top_entities %}
+              <a class="tag is-medium" href="/entity/{{ e.id }}">
+                {{ e.canonical_name }}
+                <span class="has-text-grey ml-2">{{ e.mention_count }}</span>
+              </a>
+            {% endfor %}
+          </div>
+        {% else %}
+          <p class="has-text-grey">No entities yet.</p>
+        {% endif %}
+      </div>
+      <div class="column">
+        <h2 class="title is-5">Recently active</h2>
+        {% if recently_active %}
+          <div class="tags">
+            {% for e in recently_active %}
+              <a class="tag is-medium" href="/entity/{{ e.id }}"
+                 aria-label="{{ e.canonical_name }}, last mentioned {{ e.last_mentioned_at|timesince }} ago">
+                {{ e.canonical_name }}
+                <span class="has-text-grey ml-2">{{ e.recency }}</span>
+              </a>
+            {% endfor %}
+          </div>
+        {% else %}
+          <p class="has-text-grey">No recent activity.</p>
+        {% endif %}
+      </div>
+      <div class="column">
+        <h2 class="title is-5">Top topics</h2>
+        {% if summary.top_topics %}
+          <div class="tags">
+            {% for t in summary.top_topics %}
+              <a class="tag is-medium" href="/search?q={{ t.topic|urlencode }}"
+                 aria-label="Search for {{ t.topic }}">
+                {{ t.topic }}
+                <span class="has-text-grey ml-2">{{ t.count }}</span>
+              </a>
+            {% endfor %}
+          </div>
+        {% else %}
+          <p class="has-text-grey">No topics yet.</p>
+        {% endif %}
+      </div>
+    </div>
+  {% else %}
+    <div class="content has-text-grey">
+      <p>Capture your first thought through Claude (or any connected AI) and it
+      will show up here — counts, recent entities, and topics across everything
+      you've stored.</p>
+    </div>
+  {% endif %}
+{% endblock %}

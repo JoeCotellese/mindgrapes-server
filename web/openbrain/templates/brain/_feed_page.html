@@ -1,0 +1,18 @@
+{% comment %}One page of the recent feed: the <li> rows then, if more remain, a
+  trailing <li> whose Load-more button replaces itself (outerHTML) with the next
+  page — so rows append in order inside the parent <ol id="feed-list">. This is
+  the _mentions_page.html self-replace pattern adapted to a list. Re-rendered on
+  the htmx Load-more request. Expects: experiences, has_more, next_offset,
+  feed_limit.{% endcomment %}
+{% for exp in experiences %}
+  {% include "brain/_feed_row.html" %}
+{% endfor %}
+{% if has_more %}
+  <li id="feed-more-li">
+    <button class="button is-light" id="feed-more"
+            hx-get="/recent?offset={{ next_offset }}&amp;limit={{ feed_limit }}"
+            hx-target="#feed-more-li" hx-swap="outerHTML">
+      Load more
+    </button>
+  </li>
+{% endif %}

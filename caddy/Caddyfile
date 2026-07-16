@@ -1,0 +1,113 @@
+# Mind Grapes — Caddy edge (issue #50, path-split for the Django cutover #95).
+#
+# Topology (#117 Slice E): /mcp* and the RS metadata go to the Python MCP service
+# (uvicorn run_mcp, built from the web image); everything else (/, /oauth/*, the
+# AS metadata, /accounts, /admin) goes to the Django web service. Caddy preserves
+# the request path (Tailscale `serve` would strip the mount prefix, which is why
+# the split lives here, not in tailscale/serve.json — that just roots "/" here).
+#
+# Two edges share one split:
+#   - Tailnet (local-prod): TLS is terminated by the tailscale sidecar, which
+#     forwards plain HTTP to :80 here. We force X-Forwarded-Proto=https so Django
+#     sees the real external scheme (CSRF + secure cookies).
+#   - Local-TLS edge: real hostname + TLS via {$BRAIN_HOSTNAME}. Used for
+#     `tls internal` on localhost dev; unused in prod behind Tailscale, where
+#     BRAIN_HOSTNAME defaults to localhost and public reach is Tailscale Funnel.
+#
+# Security headers are set by Django middleware for the human paths. The
+# MCP service does not yet set app-layer security headers on /mcp + /health
+# (tracked in #129); HSTS still reaches browsers domain-wide via Django.
+# Caddy here is reverse-proxy + log scrubbing + body cap.
+
+{
+	# Don't expose Caddy's admin API outside the container.
+	admin off
+
+	# Bound how long a client may take to SEND a request (slowloris), but DO NOT
+	# bound the response/stream: the MCP transport holds a long-lived
+	# text/event-stream GET open, and a write/idle timeout here would close it
+	# ("SSE stream disconnected: Premature close"). mcp has its own rate limiter.
+	servers {
+		timeouts {
+			read_body 10s
+			read_header 5s
+		}
+	}
+}
+
+# Shared path-split + edge hardening, imported by both edges below.
+(brain_split) {
+	# Strip sensitive material from access logs: query strings (defense in
+	# depth), the legacy X-Brain-Key header, the bearer Authorization header,
+	# and cookies (session/CSRF).
+	log {
+		output stdout
+		format filter {
+			wrap json
+			fields {
+				request>uri regexp "[?].*" ""
+				request>headers>X-Brain-Key delete
+				request>headers>Authorization delete
+				request>headers>Cookie delete
+			}
+		}
+	}
+
+	# Don't advertise the stack to scanners.
+	header -Server
+
+	# Cap request bodies. OAuth POSTs are KiB-scale; MCP JSON-RPC fits under
+	# 1 MiB. Larger uploads are an abuse signal.
+	request_body {
+		max_size 1MB
+	}
+
+	# /mcp + RS metadata -> Python MCP service. FastMCP's RemoteAuthProvider
+	# serves the RFC 9728 protected-resource metadata.
+	#
+	# FastMCP mounts the transport at /mcp/ (trailing slash) and 307-redirects a
+	# bare /mcp to it. Over the Funnel that redirect downgrades to http://…:80
+	# (the upstream can't see the external scheme), which isn't served — breaking
+	# clients configured with the slash-less URL. Rewrite the exact bare path
+	# to the canonical one so the client
+	# sees no redirect, and forward X-Forwarded-Proto=https so any absolute URL
+	# the app builds stays https.
+	handle /mcp* {
+		@bare path /mcp
+		rewrite @bare /mcp/
+		reverse_proxy mcp:8000 {
+			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-Proto https
+		}
+	}
+	handle /.well-known/oauth-protected-resource* {
+		reverse_proxy mcp:8000 {
+			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-Proto https
+		}
+	}
+
+	# Everything else -> Django (/, /oauth/*, AS metadata, /accounts, /admin).
+	# Force X-Forwarded-Proto=https: the external scheme is always https (TLS at
+	# the tailscale edge or Caddy's own TLS), even when this hop is plain http.
+	handle {
+		reverse_proxy web:8000 {
+			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-Proto https
+		}
+	}
+}
+
+# Tailnet edge: plain http behind the tailscale TLS terminator (no auto-https
+# redirect, which would loop). serve.json roots "/" here.
+:80 {
+	import brain_split
+}
+
+# Local-TLS edge: `tls internal` self-signs for localhost / IPs (dev). A real
+# public hostname would go to ACME automatically, but prod doesn't use this
+# edge — the production host's public reach is Tailscale Funnel, not Caddy ACME.
+{$BRAIN_HOSTNAME:localhost} {
+	tls internal
+	import brain_split
+}

@@ -1,0 +1,25 @@
+# Mind Grapes encrypted offsite backup (pg_dump | restic -> Backblaze B2).
+#
+# Linux/systemd host only — a macOS production host needs a launchd port of
+# this (open follow-up); see docs/deploy.md "Automated schedule".
+# Install on a systemd host (adjust WorkingDirectory/paths to the checkout):
+#   sudo cp systemd/openbrain-backup.* /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now openbrain-backup.timer
+# Run one off-schedule (e.g. to seed the repo): sudo systemctl start openbrain-backup.service
+# Logs: journalctl -u openbrain-backup.service
+#
+# restic credentials (RESTIC_REPOSITORY / RESTIC_PASSWORD / B2_ACCOUNT_ID /
+# B2_ACCOUNT_KEY) are read from the project .env, which backup.sh sources.
+[Unit]
+Description=Mind Grapes encrypted offsite backup
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/openbrain
+ExecStart=/opt/openbrain/backup.sh
+# A non-zero exit marks the unit failed so `systemctl status` / journald surface
+# it. To get notified, drop in an OnFailure= alert unit (e.g. one that posts to
+# ntfy/email) — see docs/deploy.md.

@@ -1,0 +1,6 @@
+{% comment %}htmx response to a /review action: the swapped row (resolved or already-handled)
+   plus the out-of-band navbar badge, and an Inbox-zero flash when the last item
+   clears. The action button targets this row's #review-item-… with outerHTML.{% endcomment %}
+{% include "brain/_review_item.html" with item=item surface=surface %}
+{% include "brain/_review_badge.html" with oob=True %}
+{% if inbox_zero %}{% include "brain/_review_flash.html" with oob=True %}{% endif %}

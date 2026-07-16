@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% block title %}Experience — Mind Grapes{% endblock %}
+{# CSRF on every htmx write (delete modal, visibility toggle) for this page. #}
+{% block body_attrs %} hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'{% endblock %}
+{% block content %}
+  <h1 class="title is-4">Experience</h1>
+
+  {% if not experience.is_live %}
+    {% if experience.deleted_at %}
+      <div class="notification is-warning" role="status">
+        <span aria-hidden="true">🗑</span>
+        <strong>Deleted.</strong> This experience was removed on
+        {{ experience.deleted_at|date:"M j, Y" }}. It stays reachable here as part
+        of the audit trail.
+      </div>
+    {% else %}
+      <div class="notification is-info" role="status">
+        <span aria-hidden="true">↻</span>
+        <strong>Superseded.</strong> A newer version replaced this one —
+        <a href="/experience/{{ experience.superseded_by }}">view the current
+        version</a>. This entry stays reachable as part of the audit trail.
+      </div>
+    {% endif %}
+  {% endif %}
+
+  <div class="box">
+    <p style="white-space: pre-wrap">{{ experience.content }}</p>
+  </div>
+
+  {% if is_owner and experience.is_live %}
+    <div class="level is-mobile mb-4">
+      <div class="level-left">
+        <div class="level-item">
+          <a class="button is-small" href="/experience/{{ experience.id }}/edit">Edit</a>
+        </div>
+        <div class="level-item">
+          <button class="button is-small is-danger is-light"
+                  hx-get="/experience/{{ experience.id }}/delete"
+                  hx-target="#modal-host" hx-swap="innerHTML">
+            Delete
+          </button>
+        </div>
+      </div>
+    </div>
+    {% include "brain/_visibility_control.html" %}
+    <div id="modal-host"></div>
+  {% endif %}
+
+  <div class="content">
+    <table class="table is-fullwidth">
+      <tbody>
+        <tr><th scope="row">Captured</th><td>{{ experience.captured_at|date:"M j, Y, g:i a"|default:"—" }}</td></tr>
+        {% if experience.occurred_at %}
+          <tr><th scope="row">Occurred</th><td>{{ experience.occurred_at|date:"M j, Y, g:i a" }}</td></tr>
+        {% elif experience.occurred_window %}
+          <tr><th scope="row">Occurred</th><td>{{ experience.occurred_window }}</td></tr>
+        {% endif %}
+        {% if experience.source_kind %}
+          <tr><th scope="row">Source</th><td>{{ experience.source_kind }}{% if experience.source_ref %} · {{ experience.source_ref }}{% endif %}</td></tr>
+        {% endif %}
+        <tr><th scope="row">Consolidation</th><td>{{ experience.consolidation_status }}</td></tr>
+        <tr><th scope="row">Visibility</th><td>{{ experience.visibility }}</td></tr>
+      </tbody>
+    </table>
+
+    {% if experience.metadata %}
+      <details>
+        <summary>Metadata</summary>
+        <dl>
+          {% for key, value in experience.metadata.items %}
+            <dt class="has-text-weight-semibold">{{ key }}</dt>
+            <dd class="ml-4">{{ value }}</dd>
+          {% endfor %}
+        </dl>
+      </details>
+    {% endif %}
+  </div>
+
+  <section aria-labelledby="mentions-heading" class="mb-5">
+    <h2 id="mentions-heading" class="title is-5">Mentions</h2>
+    {% if mentions %}
+      <div class="tags">
+        {% for m in mentions %}
+          <a class="tag is-medium" href="/entity/{{ m.entity_id }}">
+            {{ m.canonical_name }}
+            {% if m.surface_form != m.canonical_name %}
+              <span class="has-text-grey ml-2">“{{ m.surface_form }}”</span>
+            {% endif %}
+          </a>
+        {% endfor %}
+      </div>
+    {% else %}
+      <p class="has-text-grey">No entities mentioned here.</p>
+    {% endif %}
+  </section>
+
+  <section aria-labelledby="claims-heading">
+    <h2 id="claims-heading" class="title is-5">Claims sourced here</h2>
+    {% if claims_sourced_here %}
+      <ul>
+        {% for claim in claims_sourced_here %}
+          <li class="mb-2">{% include "brain/_claim_line.html" %}</li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="has-text-grey">No claims were extracted from this experience.</p>
+    {% endif %}
+  </section>
+{% endblock %}
+{% block extra_body %}
+  {% if is_owner and experience.is_live %}
+    {% load static %}
+    <script src="{% static 'vendor/htmx.min.js' %}"></script>
+  {% endif %}
+{% endblock %}

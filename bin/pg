@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Resolve project dir even when invoked through a symlink.
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+cd "$PROJECT_DIR"
+
+if [ -f .env ]; then
+  set -a; source .env; set +a
+fi
+
+cmd="${1:-help}"
+shift || true
+
+case "$cmd" in
+  up)
+    docker compose up -d --build
+    ;;
+  down)
+    docker compose down
+    ;;
+  restart)
+    docker compose restart
+    ;;
+  logs)
+    docker compose logs -f "$@"
+    ;;
+  status|ps)
+    docker compose ps
+    ;;
+  psql)
+    docker compose exec postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" "$@"
+    ;;
+  exec)
+    docker compose exec postgres "$@"
+    ;;
+  backup)
+    "$PROJECT_DIR/backup.sh"
+    ;;
+  ts-up)
+    tailscale serve --bg --tcp=5432 tcp://127.0.0.1:5432
+    ;;
+  ts-down)
+    tailscale serve --tcp=5432 off
+    ;;
+  ts-status)
+    tailscale serve status
+    ;;
+  mcp-logs)
+    docker compose logs -f mcp
+    ;;
+  mcp-restart)
+    docker compose restart mcp
+    ;;
+  ts-mcp-status)
+    docker compose exec tailscale tailscale status
+    ;;
+  help|--help|-h|"")
+    cat <<USAGE
+pg — openbrain postgres dispatcher
+
+usage: pg <command> [args]
+
+  up         build (if needed) and start the container
+  down       stop and remove the container
+  restart    restart the container
+  logs       tail container logs
+  status     show container status (alias: ps)
+  psql       open psql in the container (extra args passed through)
+  exec       run a command inside the container
+  backup     run backup.sh (pg_dump -> ./backups/)
+  ts-up      expose port 5432 on the tailnet via 'tailscale serve'
+  ts-down    stop the tailnet forwarder
+  ts-status  show 'tailscale serve' status
+  mcp-logs   tail logs from the mcp service
+  mcp-restart restart the mcp service
+  ts-mcp-status  show tailscale status inside the sidecar container
+  help       show this message
+USAGE
+    ;;
+  *)
+    echo "unknown command: $cmd" >&2
+    echo "run 'pg help' for usage" >&2
+    exit 2
+    ;;
+esac

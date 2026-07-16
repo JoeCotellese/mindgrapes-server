@@ -1,0 +1,5 @@
+{% comment %}Replaces the revoked row. Carries its own role=status and sits inside the
+   list's aria-live region, so the outcome is announced either way.{% endcomment %}
+<li role="status" aria-live="polite" class="box has-text-grey">
+  Disconnected {{ name }}. Authorize it again to reconnect.
+</li>

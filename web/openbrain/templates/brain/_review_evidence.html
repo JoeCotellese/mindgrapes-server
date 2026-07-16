@@ -1,0 +1,34 @@
+{% comment %}Lazy-loaded into a merge-candidate card by its "Show evidence" toggle (#155).
+   Up to 2 viewer-scoped example experiences per side so the operator can confirm
+   the two entities mean the same thing in context before merging.
+
+   content_excerpt is pre-escaped HTML with the surface form wrapped in <mark>
+   (see brain/excerpts.py), so it is rendered with |safe like _mentions_page.html.
+   min-width:0 lets the flex columns shrink so long excerpts wrap instead of
+   blowing out of the card.{% endcomment %}
+{% if evidence %}
+  <div class="columns mt-2">
+    <div class="column" style="min-width:0">
+      <p class="has-text-weight-semibold is-size-7">{{ evidence.a.name|default:"(unknown)" }}</p>
+      {% for exp in evidence.a.experiences %}
+        <p class="is-size-7 mb-1" style="overflow-wrap:anywhere">
+          <a href="/experience/{{ exp.experience_id }}">{{ exp.content_excerpt|safe }}</a>
+        </p>
+      {% empty %}
+        <p class="has-text-grey is-size-7">No readable examples.</p>
+      {% endfor %}
+    </div>
+    <div class="column" style="min-width:0">
+      <p class="has-text-weight-semibold is-size-7">{{ evidence.b.name|default:"(unknown)" }}</p>
+      {% for exp in evidence.b.experiences %}
+        <p class="is-size-7 mb-1" style="overflow-wrap:anywhere">
+          <a href="/experience/{{ exp.experience_id }}">{{ exp.content_excerpt|safe }}</a>
+        </p>
+      {% empty %}
+        <p class="has-text-grey is-size-7">No readable examples.</p>
+      {% endfor %}
+    </div>
+  </div>
+{% else %}
+  <p class="has-text-grey is-size-7 mt-2">No examples to show.</p>
+{% endif %}

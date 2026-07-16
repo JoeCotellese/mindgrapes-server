@@ -1,0 +1,45 @@
+{% load static %}
+<li id="client-{{ grant.client_id }}" class="box">
+  {% if confirming %}
+    {% comment %}Danger styling lives only at the confirm step. The microcopy names the
+       irreversibility and the recovery (re-authorize) in one breath.{% endcomment %}
+    <div role="group" aria-label="Confirm disconnecting {{ grant.name }}">
+      <p class="has-text-danger has-text-weight-semibold mb-3">
+        Disconnect {{ grant.name }}? It loses access immediately and can't be
+        undone — you'd reconnect by authorizing it again.
+      </p>
+      <div class="buttons">
+        <button type="button"
+                class="button is-danger"
+                hx-post="{% url 'oauth:revoke_do' grant.client_id %}"
+                hx-target="#client-{{ grant.client_id }}"
+                hx-swap="outerHTML"
+                autofocus>Disconnect</button>
+        <button type="button"
+                class="button is-light"
+                hx-get="{% url 'oauth:clients' %}"
+                hx-target="#client-list"
+                hx-swap="innerHTML">Keep it</button>
+      </div>
+    </div>
+  {% else %}
+    <strong>{{ grant.name }}</strong>
+    <p class="is-size-7 has-text-grey mt-1 mb-2">
+      Connected {{ grant.connected|date:"M j, Y" }}
+    </p>
+    {% if grant.scope_sentences %}
+      <div class="content is-size-7 has-text-grey">
+        <ul>
+          {% for sentence in grant.scope_sentences %}
+            <li>{{ sentence }}</li>
+          {% endfor %}
+        </ul>
+      </div>
+    {% endif %}
+    <button type="button"
+            class="button is-small"
+            hx-get="{% url 'oauth:revoke_confirm' grant.client_id %}"
+            hx-target="#client-{{ grant.client_id }}"
+            hx-swap="outerHTML">Revoke</button>
+  {% endif %}
+</li>

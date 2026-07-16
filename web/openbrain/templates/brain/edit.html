@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}Edit experience — Mind Grapes{% endblock %}
+{% block content %}
+  <h1 class="title is-4">Edit experience</h1>
+
+  {% if error %}
+    <div class="notification is-danger" role="alert" aria-live="assertive">
+      {{ error }}
+    </div>
+  {% endif %}
+
+  {% comment %}Always-on supersede warning (no live cosine preview in v1): a substantive
+     content change saves a NEW version and links this one as its predecessor.{% endcomment %}
+  <div class="notification is-warning" role="status">
+    Editing the text may save a new version — a substantive change supersedes this
+    entry (the old one stays reachable in the audit trail) rather than editing it
+    in place. Small wording fixes update in place.
+  </div>
+
+  <form method="post" action="/experience/{{ experience.id }}/edit">
+    {% csrf_token %}
+    <div class="field">
+      <label class="label" for="edit-content">Content</label>
+      <div class="control">
+        <textarea class="textarea" id="edit-content" name="content" rows="6"
+                  aria-describedby="edit-content-help">{% if submitted_content %}{{ submitted_content }}{% else %}{{ experience.content }}{% endif %}</textarea>
+      </div>
+      <p class="help" id="edit-content-help">The thought, as captured.</p>
+    </div>
+
+    <div class="field">
+      <label class="label" for="edit-metadata">Metadata (JSON)</label>
+      <div class="control">
+        <textarea class="textarea is-family-monospace" id="edit-metadata" name="metadata"
+                  rows="3" aria-describedby="edit-metadata-help">{% if submitted_metadata %}{{ submitted_metadata }}{% else %}{{ experience.metadata_json }}{% endif %}</textarea>
+      </div>
+      <p class="help" id="edit-metadata-help">Optional. Leave blank to keep the
+        current metadata; a metadata-only change updates in place.</p>
+    </div>
+
+    <div class="field is-grouped">
+      <div class="control">
+        <button class="button is-primary" type="submit">Save</button>
+      </div>
+      <div class="control">
+        <a class="button is-light" href="/experience/{{ experience.id }}">Cancel</a>
+      </div>
+    </div>
+  </form>
+{% endblock %}

@@ -1,0 +1,75 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Mind Grapes{% endblock %}</title>
+  <link rel="stylesheet" href="{% static 'vendor/bulma.min.css' %}">
+  {% comment %}Bulma 1.x ships light + dark themes and switches on prefers-color-scheme;
+     color-scheme keeps native form controls and scrollbars in step.{% endcomment %}
+  <style>
+    :root { color-scheme: light dark; }
+    /* Bulma 1.x flips only CSS vars for .is-active, so a more specific
+       a.navbar-item color rule wins and leaves the active item's label dark on
+       its blue fill. Force white for legible contrast (every active nav item). */
+    a.navbar-item.is-active { color: #fff; }
+  </style>
+  {% block extra_head %}{% endblock %}
+</head>
+<body{% block body_attrs %}{% endblock %}>
+  <nav class="navbar" role="navigation" aria-label="main navigation">
+    <div class="container">
+      <div class="navbar-brand">
+        <a class="navbar-item has-text-weight-semibold" href="/">Mind Grapes</a>
+        <a role="button" class="navbar-burger" aria-label="menu" aria-expanded="false"
+           data-target="navbar-menu">
+          <span aria-hidden="true"></span>
+          <span aria-hidden="true"></span>
+          <span aria-hidden="true"></span>
+        </a>
+      </div>
+      <div id="navbar-menu" class="navbar-menu">
+        <div class="navbar-start">
+          <a class="navbar-item{% if request.path == '/recent' %} is-active{% endif %}"
+             href="/recent"{% if request.path == '/recent' %} aria-current="page"{% endif %}>Recent</a>
+          <a class="navbar-item{% if request.path == '/activity' %} is-active{% endif %}"
+             href="/activity"{% if request.path == '/activity' %} aria-current="page"{% endif %}>Activity</a>
+          <a class="navbar-item{% if request.path == '/review' %} is-active{% endif %}"
+             href="/review"{% if request.path == '/review' %} aria-current="page"{% endif %}>Review{% include "brain/_review_badge.html" %}</a>
+        </div>
+        <div class="navbar-end">
+          <a class="navbar-item{% if request.path == '/connect' %} is-active{% endif %}"
+             href="/connect"{% if request.path == '/connect' %} aria-current="page"{% endif %}>Connect</a>
+          <a class="navbar-item{% if request.path == '/search' %} is-active{% endif %}"
+             href="/search"{% if request.path == '/search' %} aria-current="page"{% endif %}>Search</a>
+        </div>
+      </div>
+    </div>
+  </nav>
+  <section class="section">
+    <div class="container">
+      <div class="columns is-centered">
+        <div class="column {% block main_column %}is-8-tablet is-6-desktop{% endblock %}">
+          {% block content %}{% endblock %}
+        </div>
+      </div>
+    </div>
+  </section>
+  {% block extra_body %}{% endblock %}
+  <script>
+    // Bulma navbar burger: toggle the menu on small screens. Lives in base.html
+    // (outside extra_body) so it survives child templates overriding that block.
+    document.addEventListener('DOMContentLoaded', function () {
+      var burger = document.querySelector('.navbar-burger');
+      if (!burger) return;
+      burger.addEventListener('click', function () {
+        var menu = document.getElementById(burger.dataset.target);
+        var open = burger.classList.toggle('is-active');
+        if (menu) menu.classList.toggle('is-active');
+        burger.setAttribute('aria-expanded', open ? 'true' : 'false');
+      });
+    });
+  </script>
+</body>
+</html>

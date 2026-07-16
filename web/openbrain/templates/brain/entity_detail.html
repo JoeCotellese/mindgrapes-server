@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% load static %}
+{% block title %}{% if is_merged %}Merged entity{% else %}{{ entity.canonical_name }}{% endif %} — Mind Grapes{% endblock %}
+{% block main_column %}is-8{% endblock %}
+{% block content %}
+  {% if is_merged %}
+    <h1 class="title is-4">Merged entity</h1>
+    <div class="notification is-info" role="status">
+      <span aria-hidden="true">⇒</span>
+      <strong>Merged.</strong> This entity was merged into
+      {% if winner %}
+        <a href="/entity/{{ winner.id }}">{{ winner.canonical_name }}</a>
+      {% else %}
+        another entity (<a href="/entity/{{ merged_into }}">view</a>)
+      {% endif %}. Its mentions and claims now live there.
+    </div>
+
+    {% if merge_audit %}
+      <section aria-labelledby="merge-audit-heading">
+        <h2 id="merge-audit-heading" class="title is-5">Merge history</h2>
+        <ul>
+          {% for ev in merge_audit %}
+            <li class="mb-2">
+              {{ ev.reason|default:"merged" }}
+              {% if ev.created_at %}<span class="has-text-grey"> · {{ ev.created_at|date:"M j, Y" }}</span>{% endif %}
+              {% if ev.created_by %}<span class="has-text-grey"> · {{ ev.created_by }}</span>{% endif %}
+            </li>
+          {% endfor %}
+        </ul>
+      </section>
+    {% endif %}
+  {% else %}
+    <h1 class="title is-4">{{ entity.canonical_name }}</h1>
+    <p class="subtitle is-6 has-text-grey">{{ entity.kind }}</p>
+
+    {% if entity.aliases %}
+      <div class="tags">
+        {% for alias in entity.aliases %}
+          <span class="tag">{{ alias }}</span>
+        {% endfor %}
+      </div>
+    {% endif %}
+
+    <section aria-labelledby="mentions-heading" class="mt-5 mb-6">
+      <h2 id="mentions-heading" class="title is-5">
+        Mentions <span class="has-text-grey is-size-6">({{ mention_count }})</span>
+      </h2>
+      {% if mentions %}
+        <div id="mentions-list">
+          {% include "brain/_mentions_page.html" %}
+        </div>
+      {% else %}
+        <p class="has-text-grey">No live mentions — earlier mentions may have been
+        superseded or deleted.</p>
+      {% endif %}
+    </section>
+
+    <section aria-labelledby="claims-subject-heading" class="mb-5">
+      <h2 id="claims-subject-heading" class="title is-5">Claims as subject</h2>
+      {% if claims_as_subject %}
+        <ul>
+          {% for claim in claims_as_subject %}
+            <li class="mb-2">{% include "brain/_claim_line.html" %}</li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p class="has-text-grey">None.</p>
+      {% endif %}
+    </section>
+
+    <section aria-labelledby="claims-object-heading">
+      <h2 id="claims-object-heading" class="title is-5">Claims as object</h2>
+      {% if claims_as_object %}
+        <ul>
+          {% for claim in claims_as_object %}
+            <li class="mb-2">{% include "brain/_claim_line.html" %}</li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p class="has-text-grey">None.</p>
+      {% endif %}
+    </section>
+  {% endif %}
+{% endblock %}
+{% block extra_body %}
+  <script src="{% static 'vendor/htmx.min.js' %}"></script>
+{% endblock %}

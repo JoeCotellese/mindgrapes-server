@@ -1,0 +1,9 @@
+{% comment %}Renders one claim as subject–predicate–object. Expects `claim`.{% endcomment %}
+<a href="/entity/{{ claim.subject.id }}">{{ claim.subject.canonical_name }}</a>
+<span class="has-text-weight-semibold">{{ claim.predicate }}</span>{% if claim.predicate_detail %} ({{ claim.predicate_detail }}){% endif %}
+{% if claim.object.id %}
+  <a href="/entity/{{ claim.object.id }}">{{ claim.object.canonical_name }}</a>
+{% elif claim.object.literal %}
+  <span>{{ claim.object.literal }}</span>
+{% endif %}
+{% if claim.polarity == "negative" %}<span class="tag is-light ml-1">negated</span>{% endif %}

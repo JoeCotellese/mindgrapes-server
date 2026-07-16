@@ -1,0 +1,58 @@
+{% comment %}Search results region. Expects: q; results (None = no query yet,
+  [] = zero matches, else a list); error (embedding failure). Only the populated
+  heading carries data-results-heading, so focus lands there after an htmx swap
+  while the zero-result state leaves focus in the search field.{% endcomment %}
+{% if error %}
+  <div class="notification is-warning" role="status">
+    <span aria-hidden="true">⚠</span>
+    <strong>Search is temporarily unavailable.</strong> The embedding service
+    didn't respond. Nothing was changed — try again in a moment.
+  </div>
+{% elif results is None %}
+  <p class="has-text-grey">Enter a query to search across everything you've stored.</p>
+{% elif results %}
+  <h2 class="title is-5" data-results-heading tabindex="-1">
+    {{ results|length }} result{{ results|length|pluralize }} for “{{ q }}”
+  </h2>
+  {% for r in results %}
+    <article class="box">
+      <p class="mb-3">
+        <a href="/experience/{{ r.id }}">{{ r.content|truncatechars:200 }}</a>
+      </p>
+      <div class="field is-grouped is-grouped-multiline mb-2">
+        <div class="control">
+          <div class="tags has-addons">
+            <span class="tag">fused</span>
+            <span class="tag is-info">{{ r.fused_score|floatformat:2 }}</span>
+          </div>
+        </div>
+        <div class="control">
+          <div class="tags has-addons">
+            <span class="tag">vec</span>
+            <span class="tag is-light">{{ r.vec_score|floatformat:2 }}</span>
+          </div>
+        </div>
+        <div class="control">
+          <div class="tags has-addons">
+            <span class="tag">lex</span>
+            <span class="tag is-light">{{ r.lex_score|floatformat:2 }}</span>
+          </div>
+        </div>
+      </div>
+      {% if r.mentioned_entities %}
+        <div class="tags">
+          {% for e in r.mentioned_entities %}
+            <a class="tag" href="/entity/{{ e.id }}">{{ e.canonical_name }}</a>
+          {% endfor %}
+        </div>
+      {% endif %}
+      <p class="is-size-7 has-text-grey">
+        {{ r.claim_count }} claim{{ r.claim_count|pluralize }} sourced here
+      </p>
+    </article>
+  {% endfor %}
+{% else %}
+  <h2 class="title is-5">No results for “{{ q }}”</h2>
+  <p class="has-text-grey">Nothing matched. Try different words — search blends
+  meaning and keywords.</p>
+{% endif %}

@@ -1,0 +1,13 @@
+{% if grants %}
+  {# Bulma's minireset strips ul bullets + padding, so no inline list reset. #}
+  <ul>
+    {% for grant in grants %}
+      {% include "oauth/_client_row.html" %}
+    {% endfor %}
+  </ul>
+{% else %}
+  <div class="notification">
+    You haven't connected any apps yet.
+    <a href="/connect">Connect an app</a> to get started.
+  </div>
+{% endif %}

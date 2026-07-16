@@ -1,0 +1,15 @@
+.env
+backups/
+.claude/settings.local.json
+
+# Build artifacts and tooling caches
+.serena/
+
+# Django web/ dev artifacts
+.env.dev
+web/.venv/
+web/db.sqlite3
+web/staticfiles/
+__pycache__/
+*.pyc
+.pytest_cache/

@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}Authorize — Mind Grapes{% endblock %}
+{% block content %}
+  <h1 class="title">Connect to your Mind Grapes</h1>
+
+  <p class="block"><strong>{{ client_name }}</strong> is asking to connect to your Mind Grapes.</p>
+
+  {% if scope_sentences %}
+    <p class="block">If you approve, it will be able to:</p>
+    <div class="content">
+      <ul>
+        {% for sentence in scope_sentences %}
+          <li>{{ sentence }}</li>
+        {% endfor %}
+      </ul>
+    </div>
+  {% endif %}
+
+  <p class="help">
+    After approving, you'll be returned to <code>{{ redirect_host }}</code>.
+    Only continue if you recognize that destination.
+  </p>
+
+  {% comment %}No action attribute: the form posts back to this same URL so the original
+     authorize parameters (in the query string) are preserved. Cancel is first
+     and focused by default — approving is the deliberate act.{% endcomment %}
+  <form method="post">
+    {% csrf_token %}
+    <div class="buttons mt-5">
+      <button type="submit" name="action" value="deny" autofocus class="button">Cancel</button>
+      <button type="submit" name="action" value="allow" class="button is-primary">Approve</button>
+    </div>
+  </form>
+{% endblock %}

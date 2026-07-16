@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}Authorization error — Mind Grapes{% endblock %}
+{% block content %}
+  <h1 class="title">Something went wrong</h1>
+  <p class="block">This authorization request could not be completed.</p>
+  <div class="message is-danger">
+    <div class="message-body">
+      <code>{{ error }}</code>{% if description %} — {{ description }}{% endif %}
+    </div>
+  </div>
+  <p class="block">Return to the application that sent you here and try again.</p>
+{% endblock %}

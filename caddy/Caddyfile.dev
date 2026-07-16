@@ -1,0 +1,42 @@
+# Mind Grapes — dev Caddy edge (epic #61, slice #62).
+#
+# Plain HTTP on :80 (published to the host on 8080). No TLS in dev:
+# http://localhost is already a secure context for the WebAuthn that lands
+# in Slice 1. Production uses caddy/Caddyfile with real TLS.
+#
+# Path split (#117 Slice E — Node retired, /mcp now serves Python):
+#   /mcp*                                   -> Python MCP service (run_mcp)
+#   /.well-known/oauth-protected-resource*  -> Python MCP (RFC 9728 RS metadata)
+#   /oauth/*                                -> Django (authorize/token/register/jwks)
+#   /.well-known/oauth-authorization-server -> Django (RFC 8414 AS metadata)
+#   everything else                         -> Django (/, /accounts/*, /admin/*)
+
+{
+	admin off
+}
+
+:80 {
+	# FastMCP mounts at /mcp/ and 307-redirects a bare /mcp; rewrite the exact
+	# bare path so clients using the slash-less URL see no redirect. (Dev is plain
+	# http on one port, so unlike prod the redirect wouldn't break — but keep the
+	# behaviour identical to prod.)
+	handle /mcp* {
+		@bare path /mcp
+		rewrite @bare /mcp/
+		reverse_proxy mcp:8000 {
+			header_up X-Real-IP {remote_host}
+		}
+	}
+
+	# RS metadata is served by FastMCP's RemoteAuthProvider; the AS metadata,
+	# /oauth/*, and all human paths fall through to Django below.
+	handle /.well-known/oauth-protected-resource* {
+		reverse_proxy mcp:8000 {
+			header_up X-Real-IP {remote_host}
+		}
+	}
+
+	handle {
+		reverse_proxy web:8000
+	}
+}

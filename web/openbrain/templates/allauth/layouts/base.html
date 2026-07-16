@@ -1,0 +1,6 @@
+{% extends "base.html" %}
+{% comment %}Render every allauth page (login, logout, recovery codes, MFA) inside the
+   Mind Grapes chrome by bridging allauth's head_title/content/body blocks onto
+   our base layout. extra_head/extra_body pass through to base.html unchanged.{% endcomment %}
+{% block title %}{% block head_title %}{% endblock head_title %}{% endblock title %}
+{% block content %}{% block body %}{% endblock body %}{% endblock content %}

@@ -1,0 +1,40 @@
+# ABOUTME: CI gate that builds the prod Docker images and runs Django's system
+# ABOUTME: check, catching prod-only build/runtime breakage the dev stack masks (#109).
+name: prod-images
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  build-prod-images:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Builds web/Dockerfile with runtime-only deps, same as prod. The Node mcp
+      # image was dropped here when the service was retired (#122).
+      - name: Build prod web image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./web
+          push: false
+          load: true
+          tags: openbrain-web:ci
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,mode=max,scope=web
+
+      # `manage.py check` imports the URLconf -> views -> embeddings -> httpx,
+      # so a runtime dep that only lives in the dev extra (#107) fails here.
+      # It runs no migrations and opens no DB connection; the POSTGRES_* values
+      # only need to satisfy settings import under config.settings.production.
+      - name: Django system check inside the prod web image
+        run: |
+          docker run --rm --entrypoint python \
+            -e DJANGO_SETTINGS_MODULE=config.settings.production \
+            -e SECRET_KEY=ci-dummy-not-a-secret \
+            -e POSTGRES_DB=ci -e POSTGRES_USER=ci -e POSTGRES_PASSWORD=ci \
+            openbrain-web:ci manage.py check

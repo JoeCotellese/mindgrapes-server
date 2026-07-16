@@ -1,0 +1,74 @@
+{% comment %}One page of the activity log: the <li> change-event rows then, if more
+  remain, a trailing <li> whose Load-more button replaces itself (outerHTML) with
+  the next page — so rows append in order inside the parent <ol id="activity-list">.
+  This is the _feed_page.html self-replace pattern. Re-rendered on the htmx
+  Load-more request. Expects: events, has_more, next_offset, feed_limit.
+
+  Each row leads with a type chip (shape + WORD, never color alone — a11y), then
+  the linked target (+ survivor for a merge) and the actor, with the consolidation
+  worker tagged "auto". The before/after is a native <details> for free keyboard +
+  screen-reader expand/collapse.{% endcomment %}
+{% for ev in events %}
+  <li class="box">
+    <div class="media">
+      <div class="media-content">
+        <p class="mb-2">
+          <span class="tag {{ ev.chip_class }}">{{ ev.change_label }}</span>
+          {% if ev.target.href %}
+            <a href="{{ ev.target.href }}">{{ ev.target.label }}</a>
+          {% else %}
+            <span class="has-text-grey-dark">{{ ev.target.label }}</span>
+          {% endif %}
+          {% if ev.secondary %}
+            <span aria-hidden="true">→</span>
+            <a href="{{ ev.secondary.href }}">{{ ev.secondary.label }}</a>
+          {% endif %}
+        </p>
+        <p class="is-size-7 has-text-grey mb-2">
+          {{ ev.actor.label }}
+          {% if ev.actor.is_auto %}
+            <span class="tag is-light" aria-label="Automated change">auto</span>
+          {% endif %}
+          {% if ev.reason %}· {{ ev.reason }}{% endif %}
+        </p>
+        {% if ev.has_diff %}
+          <details>
+            <summary class="is-size-7">Show change</summary>
+            <div class="mt-2">
+              {% if ev.before_pretty %}
+                <article class="message is-danger is-light">
+                  <div class="message-header"><p>Before</p></div>
+                  <div class="message-body"><pre>{{ ev.before_pretty }}</pre></div>
+                </article>
+              {% endif %}
+              {% if ev.after_pretty %}
+                <article class="message is-success is-light">
+                  <div class="message-header"><p>After</p></div>
+                  <div class="message-body"><pre>{{ ev.after_pretty }}</pre></div>
+                </article>
+              {% endif %}
+            </div>
+          </details>
+        {% endif %}
+      </div>
+      <div class="media-right has-text-right">
+        {% if ev.created_at %}
+          <time class="is-size-7 has-text-grey"
+                datetime="{{ ev.created_at|date:'c' }}"
+                title="{{ ev.created_at|date:'M j, Y, g:i a' }}">
+            {{ ev.created_at|timesince }} ago
+          </time>
+        {% endif %}
+      </div>
+    </div>
+  </li>
+{% endfor %}
+{% if has_more %}
+  <li id="activity-more-li">
+    <button class="button is-light" id="activity-more"
+            hx-get="/activity?offset={{ next_offset }}&amp;limit={{ feed_limit }}"
+            hx-target="#activity-more-li" hx-swap="outerHTML">
+      Load more
+    </button>
+  </li>
+{% endif %}

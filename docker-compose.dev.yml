@@ -1,0 +1,165 @@
+# Mind Grapes — ISOLATED development stack (epic #61, slice #62).
+#
+# Shares the *schema* (./init) with live but never the *data*. Every
+# isolation-critical value below is a hardcoded literal, NOT a ${VAR}
+# substitution, so this file is immune to whatever the live `.env` holds —
+# a stray `docker compose -f docker-compose.dev.yml down -v` can only ever
+# remove the pgdata_dev volume, never the live pgdata.
+#
+#   project name : openbrain-dev   (namespaces network + volumes)
+#   pg volume    : pgdata_dev       (physically separate from live pgdata)
+#   db name      : openbrain_dev
+#   host ports   : 5433 / 8080 / 8025  (no collision with live 5432/80/443)
+#   containers   : openbrain-dev-*
+#
+# One-time setup:  cp .env.dev.example .env.dev
+# Bring up:        docker compose -f docker-compose.dev.yml up
+name: openbrain-dev
+
+services:
+  postgres:
+    build: .
+    image: openbrain-postgres:local
+    container_name: openbrain-dev-postgres
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5433:5432"
+    environment:
+      POSTGRES_USER: openbrain
+      POSTGRES_PASSWORD: devpassword
+      POSTGRES_DB: openbrain_dev
+    volumes:
+      - pgdata_dev:/var/lib/postgresql
+      - ./init:/docker-entrypoint-initdb.d:ro
+      - ./config:/etc/postgresql/conf.d:ro
+    # NOTE: no ./backups mount — dev cannot write into the live backup dir.
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_stat_statements,pg_cron
+      - -c
+      - cron.database_name=openbrain_dev
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U openbrain -d openbrain_dev"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile.dev
+    image: openbrain-web:dev
+    container_name: openbrain-dev-web
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # Django secrets/config from .env.dev; DB + email wiring inline.
+    env_file:
+      - .env.dev
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings.docker
+      DATABASE_URL: postgres://openbrain:devpassword@postgres:5432/openbrain_dev
+      EMAIL_HOST: mailpit
+      EMAIL_PORT: "1025"
+    volumes:
+      - ./web:/app
+      - /app/.venv  # mask the host venv (wrong platform inside the container)
+      # The brain schema spine, so the boot-gate spine guard (test_boot.py) and
+      # `brain_ledger` resolve init/NN-*.sql in-container (#125). BASE_DIR=/app,
+      # so its parent is /, where the guard looks for /init.
+      - ./init:/init:ro
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz').status==200 else 1)
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # Python MCP server (epic #117). Built from the same web image; serves /mcp.
+  # Overrides the entrypoint to skip migrate-on-boot — web owns migrations;
+  # this service only runs its own schema boot-gate inside run_mcp.
+  mcp:
+    image: openbrain-web:dev
+    container_name: openbrain-dev-mcp
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+    env_file:
+      - .env.dev
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings.docker
+      DATABASE_URL: postgres://openbrain:devpassword@postgres:5432/openbrain_dev
+      OAUTH_JWKS_URL: http://web:8000/oauth/jwks.json
+      MCP_PATH: /mcp/
+    volumes:
+      - ./web:/app
+      - /app/.venv  # mask the host venv (wrong platform inside the container)
+      - ./init:/init:ro  # init/NN-*.sql for `brain_ledger migrate` in-container
+    entrypoint: ["python", "manage.py"]
+    command: ["run_mcp", "--host", "0.0.0.0", "--port", "8000"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health').status==200 else 1)"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # Python consolidation worker (epic #117, Slice D). Same web image, but instead
+  # of serving HTTP it holds a dedicated LISTEN brain_consolidate connection and
+  # runs claim extraction for each row the pg_cron tick hands it. The sole
+  # consolidator. Skips migrate-on-boot (web owns migrations); run_consolidation runs its own
+  # schema boot-gate.
+  consolidation:
+    image: openbrain-web:dev
+    container_name: openbrain-dev-consolidation
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+    env_file:
+      - .env.dev
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings.docker
+      DATABASE_URL: postgres://openbrain:devpassword@postgres:5432/openbrain_dev
+    volumes:
+      - ./web:/app
+      - /app/.venv  # mask the host venv (wrong platform inside the container)
+    entrypoint: ["python", "manage.py"]
+    command: ["run_consolidation"]
+
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: openbrain-dev-mailpit
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8025:8025"  # web UI; SMTP 1025 stays internal
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: openbrain-dev-caddy
+    restart: unless-stopped
+    depends_on:
+      web:
+        condition: service_healthy
+      mcp:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8080:80"  # single dev entrypoint; path split inside
+    volumes:
+      - ./caddy/Caddyfile.dev:/etc/caddy/Caddyfile:ro
+      - caddy_dev_data:/data
+      - caddy_dev_config:/config
+
+volumes:
+  pgdata_dev:
+  caddy_dev_data:
+  caddy_dev_config:

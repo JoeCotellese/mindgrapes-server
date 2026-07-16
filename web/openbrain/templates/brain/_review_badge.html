@@ -1,0 +1,7 @@
+{% comment %}Navbar pending-review count badge. Shared by the navbar (review_pending_total
+   from the context processor) and htmx action responses (included with oob=True
+   so the count updates out-of-band). Suppressed entirely at zero.{% endcomment %}
+<span id="review-badge"{% if oob %} hx-swap-oob="true"{% endif %}>
+  {% if review_pending_total %}<span class="tag is-danger is-rounded ml-2"
+        aria-label="{{ review_pending_total }} item{{ review_pending_total|pluralize }} awaiting review">{{ review_pending_total }}</span>{% endif %}
+</span>

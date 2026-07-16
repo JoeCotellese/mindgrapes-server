@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% load static %}
+{% block title %}Register a passkey — Mind Grapes{% endblock %}
+{% block content %}
+  <h1 class="title">Register your passkey</h1>
+  <div class="content">
+    <p>
+      Use Touch&nbsp;ID, Face&nbsp;ID, Windows&nbsp;Hello, or a hardware security
+      key to create a passkey for Mind Grapes. You can sign in with it from then on —
+      no password.
+    </p>
+  </div>
+
+  <form method="post" action="{% url 'accounts:passkey_add' %}">
+    {% csrf_token %}
+    {{ form.credential }}
+    {# Forces a discoverable, user-verifying passkey client-side (see webauthn.js). #}
+    <input type="checkbox" id="id_passwordless" checked hidden>
+    <button type="button" id="mfa_webauthn_add" class="button is-primary">Create passkey</button>
+  </form>
+
+  {% if form.errors %}
+    <div class="message is-danger mt-4">
+      <ul class="message-body errors">
+        {% for field, errors in form.errors.items %}
+          {% for error in errors %}<li>{{ error }}</li>{% endfor %}
+        {% endfor %}
+      </ul>
+    </div>
+  {% endif %}
+{% endblock %}
+{% block extra_body %}
+  {% include "mfa/webauthn/snippets/scripts.html" %}
+  {{ js_data|json_script:"js_data" }}
+  <script data-allauth-onload="allauth.webauthn.forms.addForm" type="application/json">{
+    "ids": {
+      "add": "mfa_webauthn_add",
+      "passwordless": "id_passwordless",
+      "credential": "{{ form.credential.auto_id }}",
+      "data": "js_data"
+    }
+  }</script>
+{% endblock %}

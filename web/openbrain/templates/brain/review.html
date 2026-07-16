@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% load static %}
+{% block title %}Review — Mind Grapes{% endblock %}
+{% block main_column %}is-10{% endblock %}
+{# CSRF on every htmx write (confirm/reject/apply/resolve) for this page. #}
+{% block body_attrs %} hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'{% endblock %}
+{% block extra_head %}
+  {# Drive Bulma's button spinner from htmx's request state on action buttons. #}
+  <style>
+    .button.htmx-request { color: transparent !important; pointer-events: none; position: relative; }
+    .button.htmx-request::after {
+      animation: spinAround 500ms infinite linear;
+      border: 2px solid #b5b5b5; border-right-color: transparent; border-top-color: transparent;
+      border-radius: 9999px; content: ""; display: block; height: 1em; width: 1em;
+      position: absolute; left: calc(50% - 0.5em); top: calc(50% - 0.5em);
+    }
+  </style>
+{% endblock %}
+{% block content %}
+  <h1 class="title is-4">Review</h1>
+  <p class="subtitle is-6 has-text-grey">
+    Items the brain flagged for your judgment — duplicates to merge, proposed
+    corrections, disambiguations, and claims to look over.
+  </p>
+
+  {% if total == 0 %}
+    <div class="notification is-success is-light" role="status">
+      <strong>Inbox zero.</strong> Nothing left to review. 🎉
+    </div>
+  {% else %}
+    <div class="tabs">
+      <ul>
+        {% for s in surfaces %}
+          <li{% if s.key == active %} class="is-active"{% endif %}>
+            <a href="/review?surface={{ s.key }}"{% if s.key == active %} aria-current="page"{% endif %}>
+              {{ s.label }}
+              {% if s.count %}<span class="tag is-rounded ml-2">{{ s.count }}</span>{% endif %}
+            </a>
+          </li>
+        {% endfor %}
+      </ul>
+    </div>
+
+    {# Filled out-of-band when an action empties the whole queue. #}
+    <div id="review-flash"></div>
+
+    <div id="review-list">
+      {% if not rows %}
+        <div class="content has-text-grey">
+          <p>Nothing pending in this surface. ✓</p>
+        </div>
+      {% else %}
+        {% for item in rows %}
+          {% include "brain/_review_item.html" with item=item surface=active %}
+        {% endfor %}
+      {% endif %}
+    </div>
+  {% endif %}
+{% endblock %}
+{% block extra_body %}
+  <script src="{% static 'vendor/htmx.min.js' %}"></script>
+{% endblock %}

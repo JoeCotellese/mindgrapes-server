@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% load static %}
+{% block title %}Recent — Mind Grapes{% endblock %}
+{% block main_column %}is-10{% endblock %}
+{% block extra_head %}
+  {% comment %}Drive Bulma's button spinner from htmx's request state on the Load-more
+     button (hx-indicator). Bulma defines the spinAround keyframe already.{% endcomment %}
+  <style>
+    .button.htmx-request { color: transparent !important; pointer-events: none; position: relative; }
+    .button.htmx-request::after {
+      animation: spinAround 500ms infinite linear;
+      border: 2px solid #b5b5b5; border-right-color: transparent; border-top-color: transparent;
+      border-radius: 9999px; content: ""; display: block; height: 1em; width: 1em;
+      position: absolute; left: calc(50% - 0.5em); top: calc(50% - 0.5em);
+    }
+    /* Timeline rail: a thin left border reads as a spine without heavy chrome. */
+    #feed-list section { border-left: 2px solid var(--bulma-border); padding-left: 1rem; margin-bottom: 1.5rem; }
+    #feed-list section h2.title { margin-bottom: 0.75rem; }
+  </style>
+{% endblock %}
+{% block content %}
+  <h1 class="title is-4">Recent</h1>
+
+  {# List | Timeline tabs over the same dataset; ?view selects the render. #}
+  <div class="tabs">
+    <ul>
+      <li{% if view != 'timeline' %} class="is-active"{% endif %}>
+        <a href="/recent"{% if view != 'timeline' %} aria-current="page"{% endif %}>List</a>
+      </li>
+      <li{% if view == 'timeline' %} class="is-active"{% endif %}>
+        <a href="/recent?view=timeline"{% if view == 'timeline' %} aria-current="page"{% endif %}>Timeline</a>
+      </li>
+    </ul>
+  </div>
+
+  {% if not experiences %}
+    <div class="content has-text-grey">
+      <p>Capture a thought through Claude (or any connected AI) and it will show
+      up here — your most recent captures, newest first.</p>
+    </div>
+  {% elif view == 'timeline' %}
+    <div id="feed-list">
+      {% include "brain/_timeline.html" %}
+    </div>
+  {% else %}
+    <ol class="feed" id="feed-list" aria-label="Recent captures, newest first">
+      {% include "brain/_feed_page.html" %}
+    </ol>
+  {% endif %}
+{% endblock %}
+{% block extra_body %}
+  <script src="{% static 'vendor/htmx.min.js' %}"></script>
+  <script>
+    // After a Load-more swap, move focus to the new Load-more button (or, on the
+    // last page, the last row's link) so keyboard / screen-reader users aren't
+    // dropped to <body>. Mirrors the search page's afterSwap focus handling.
+    document.body.addEventListener('htmx:afterSwap', function () {
+      var list = document.getElementById('feed-list');
+      if (!list) return;
+      var target = document.getElementById('feed-more');
+      if (!target) {
+        // Last page: focus the final row's link (works across the Timeline's
+        // several section lists, not just the List view's single <ol>).
+        var rows = list.querySelectorAll('li.box');
+        var lastRow = rows[rows.length - 1];
+        target = lastRow && lastRow.querySelector('a');
+      }
+      if (target) target.focus();
+    });
+  </script>
+{% endblock %}

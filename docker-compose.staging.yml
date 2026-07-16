@@ -1,0 +1,141 @@
+# ABOUTME: Throwaway STAGING stack to rehearse the live Django cutover (#95 step 2).
+# ABOUTME: Isolated volume/ports/project; restores a live dump, never touches pgdata.
+#
+# Purpose: prove `manage.py migrate` applies cleanly ON TOP OF a copy of the
+# real live brain schema (brain.* + the public.thoughts view + the #91 ledger)
+# before the same migrate is run against live in step 4. Like docker-compose.dev.yml,
+# every isolation-critical value is a hardcoded literal, NOT a ${VAR}, so this file
+# is immune to the live `.env` — a stray `down -v` can only remove pgdata_staging.
+#
+#   project name : openbrain-staging
+#   pg volume    : pgdata_staging         (separate from live pgdata + dev pgdata_dev)
+#   db name      : openbrain_dev          (matches .env.dev wiring; data is RESTORED, not init'd)
+#   host ports   : 5434 / 8090            (no collision with live 5432/80/443 or dev 5433/8080)
+#   containers   : openbrain-staging-*
+#
+# Flow:
+#   docker compose -f docker-compose.staging.yml up -d postgres
+#   docker compose -f docker-compose.staging.yml exec -T postgres \
+#     pg_restore --no-owner --no-privileges -U openbrain -d openbrain_dev /backups/<dump>
+#   docker compose -f docker-compose.staging.yml up -d web mcp caddy
+#   ... verify ... then: docker compose -f docker-compose.staging.yml down -v
+name: openbrain-staging
+
+services:
+  postgres:
+    build: .
+    image: openbrain-postgres:local
+    container_name: openbrain-staging-postgres
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5434:5432"
+    environment:
+      POSTGRES_USER: openbrain
+      POSTGRES_PASSWORD: devpassword
+      POSTGRES_DB: openbrain_dev
+    # NO ./init mount: the live dump carries the full schema + data, so the DB
+    # must boot EMPTY and be populated by pg_restore (mirrors the restore drill).
+    # ./backups is mounted read-only so pg_restore can read the dump in-container.
+    volumes:
+      - pgdata_staging:/var/lib/postgresql
+      - ./backups:/backups:ro
+      - ./config:/etc/postgresql/conf.d:ro
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_stat_statements,pg_cron
+      - -c
+      - cron.database_name=openbrain_dev
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U openbrain -d openbrain_dev"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile.dev
+    image: openbrain-web:dev
+    container_name: openbrain-staging-web
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - .env.dev
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings.docker
+      DATABASE_URL: postgres://openbrain:devpassword@postgres:5432/openbrain_dev
+      # No mailpit in staging; migrate/jwks/discovery don't send mail.
+      EMAIL_HOST: localhost
+      EMAIL_PORT: "1025"
+    # Dockerfile.dev does not COPY the app in; the source arrives via this bind
+    # mount (same as docker-compose.dev.yml). Mask the host venv (wrong platform).
+    volumes:
+      - ./web:/app
+      - /app/.venv
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz').status==200 else 1)
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # Python MCP server (epic #117). Same bind-mounted dev image as web; serves
+  # /mcp. Skips migrate-on-boot (web owns migrations); run_mcp runs only the
+  # brain schema boot-gate.
+  mcp:
+    image: openbrain-web:dev
+    container_name: openbrain-staging-mcp
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+    env_file:
+      - .env.dev
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings.docker
+      DATABASE_URL: postgres://openbrain:devpassword@postgres:5432/openbrain_dev
+      # Issuer + RS base match the staging edge port so RS validation lines up.
+      OAUTH_ISSUER: http://localhost:8090
+      OAUTH_JWKS_URL: http://web:8000/oauth/jwks.json
+      BRAIN_MCP_URL: http://localhost:8090/mcp
+      MCP_PATH: /mcp/
+    volumes:
+      - ./web:/app
+      - /app/.venv
+      - ./init:/init:ro
+    entrypoint: ["python", "manage.py"]
+    command: ["run_mcp", "--host", "0.0.0.0", "--port", "8000"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health').status==200 else 1)"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: openbrain-staging-caddy
+    restart: unless-stopped
+    depends_on:
+      web:
+        condition: service_healthy
+      mcp:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8090:80"
+    volumes:
+      - ./caddy/Caddyfile.dev:/etc/caddy/Caddyfile:ro
+      - caddy_staging_data:/data
+      - caddy_staging_config:/config
+
+volumes:
+  pgdata_staging:
+  caddy_staging_data:
+  caddy_staging_config:

@@ -1,0 +1,11 @@
+# Keep the prod image lean and platform-clean: the host .venv is the wrong
+# platform inside the container, and caches/local DBs/static must not leak in.
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+db.sqlite3
+staticfiles/
+.env
+.env.*

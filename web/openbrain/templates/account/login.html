@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Sign in — Mind Grapes{% endblock %}
+{% block content %}
+  <h1 class="title">Sign in</h1>
+  <div class="content">
+    <p>Use your passkey — Touch&nbsp;ID, Face&nbsp;ID, Windows&nbsp;Hello, or a
+       hardware security key. No password.</p>
+  </div>
+
+  {% if PASSKEY_LOGIN_ENABLED %}
+    <button type="submit" form="mfa_login" id="passkey_login"
+            class="button is-primary">
+      Sign in with a passkey
+    </button>
+  {% endif %}
+
+  <p class="help mt-5">
+    Lost access to your passkeys? Ask your administrator for a new enrollment link.
+  </p>
+{% endblock %}
+{% block extra_body %}
+  {% if PASSKEY_LOGIN_ENABLED %}
+    {% include "mfa/webauthn/snippets/login_script.html" with button_id="passkey_login" %}
+    <script>
+      // Best-effort: surface the system passkey sheet on load. Browsers that
+      // require a user gesture for the modal ceremony will ignore this; the
+      // button above remains the reliable fallback.
+      window.addEventListener("load", function () {
+        const btn = document.getElementById("passkey_login");
+        if (btn) {
+          try { btn.click(); } catch (e) { /* fall back to manual click */ }
+        }
+      });
+    </script>
+  {% endif %}
+{% endblock %}

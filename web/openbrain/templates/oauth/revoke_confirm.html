@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Disconnect {{ grant.name }} — Mind Grapes{% endblock %}
+{% block content %}
+  {% comment %}No-JS fallback: a standalone confirm page that posts the revoke. Reached
+     when the row's hx-get isn't intercepted by htmx (JS off / not loaded).{% endcomment %}
+  <h1 class="title">Disconnect {{ grant.name }}?</h1>
+  <div class="notification is-danger">
+    It loses access immediately and can't be undone — you'd reconnect by
+    authorizing it again.
+  </div>
+  <form method="post" action="{% url 'oauth:revoke_do' grant.client_id %}">
+    {% csrf_token %}
+    <div class="buttons">
+      <button type="submit" autofocus class="button is-danger">Disconnect</button>
+      <a href="{% url 'oauth:clients' %}" class="button is-light">Keep it</a>
+    </div>
+  </form>
+{% endblock %}

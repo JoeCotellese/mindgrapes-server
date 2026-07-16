@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% load static %}
+{% block title %}Activity — Mind Grapes{% endblock %}
+{% block main_column %}is-10{% endblock %}
+{% block extra_head %}
+  {% comment %}Drive Bulma's button spinner from htmx's request state on the Load-more
+     button (hx-indicator). Bulma defines the spinAround keyframe already.{% endcomment %}
+  <style>
+    .button.htmx-request { color: transparent !important; pointer-events: none; position: relative; }
+    .button.htmx-request::after {
+      animation: spinAround 500ms infinite linear;
+      border: 2px solid #b5b5b5; border-right-color: transparent; border-top-color: transparent;
+      border-radius: 9999px; content: ""; display: block; height: 1em; width: 1em;
+      position: absolute; left: calc(50% - 0.5em); top: calc(50% - 0.5em);
+    }
+    /* The before/after expander reads as a quiet inline control, not a button. */
+    #activity-list details > summary { cursor: pointer; }
+    #activity-list pre { white-space: pre-wrap; word-break: break-word; }
+  </style>
+{% endblock %}
+{% block content %}
+  <h1 class="title is-4">Activity</h1>
+  <p class="subtitle is-6 has-text-grey">
+    Every change to the brain, newest first — what changed, who changed it
+    (you or the consolidation worker), and the before/after.
+  </p>
+
+  {% if not events %}
+    <div class="content has-text-grey">
+      <p>No changes recorded yet. Edits, retractions, merges, and the overnight
+      consolidation worker's changes will show up here.</p>
+    </div>
+  {% else %}
+    <ol class="feed" id="activity-list" aria-label="Brain changes, newest first">
+      {% include "brain/_activity_page.html" %}
+    </ol>
+  {% endif %}
+{% endblock %}
+{% block extra_body %}
+  <script src="{% static 'vendor/htmx.min.js' %}"></script>
+  <script>
+    // After a Load-more swap, move focus to the new Load-more button (or, on the
+    // last page, the last row's first link) so keyboard / screen-reader users
+    // aren't dropped to <body>. Mirrors /recent's afterSwap focus handling.
+    document.body.addEventListener('htmx:afterSwap', function () {
+      var list = document.getElementById('activity-list');
+      if (!list) return;
+      var target = document.getElementById('activity-more');
+      if (!target) {
+        var rows = list.querySelectorAll('li.box');
+        var lastRow = rows[rows.length - 1];
+        target = lastRow && lastRow.querySelector('a, summary');
+      }
+      if (target) target.focus();
+    });
+  </script>
+{% endblock %}

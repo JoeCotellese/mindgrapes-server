@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% load static %}
+{% block title %}Connected apps — Mind Grapes{% endblock %}
+{% block content %}
+  <h1 class="title">Connected apps</h1>
+  <div class="content">
+    <p>Apps you've authorized to reach your Mind Grapes. Disconnecting one cuts it
+    off immediately.</p>
+  </div>
+
+  {% comment %}The list lives in one aria-live region so HTMX swaps (confirm, revoke) are
+     announced. hx-headers here carries the CSRF token to the POST inside.{% endcomment %}
+  <div id="client-list" aria-live="polite"
+       hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'>
+    {% include "oauth/_client_list.html" %}
+  </div>
+{% endblock %}
+{% block extra_body %}
+  <script src="{% static 'vendor/htmx.min.js' %}"></script>
+  <script>
+    // htmx does not honor `autofocus` inside swapped-in content, so move focus
+    // to the freshly-rendered destructive control after each swap — that's what
+    // makes the confirm step reachable and operable from the keyboard.
+    document.body.addEventListener('htmx:afterSwap', function (e) {
+      var focusable = e.detail.target.querySelector('[autofocus]');
+      if (focusable) focusable.focus();
+    });
+  </script>
+{% endblock %}

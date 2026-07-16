@@ -1,0 +1,12 @@
+# Daily trigger for openbrain-backup.service. Persistent=true runs a missed
+# backup as soon as the box comes back up (e.g. after a reboot through 03:00).
+[Unit]
+Description=Daily Mind Grapes backup
+
+[Timer]
+OnCalendar=*-*-* 03:00:00
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

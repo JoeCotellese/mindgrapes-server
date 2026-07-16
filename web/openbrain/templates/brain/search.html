@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% load static %}
+{% block title %}Search — Mind Grapes{% endblock %}
+{% block main_column %}is-10{% endblock %}
+{% block content %}
+  <h1 class="title is-4">Search</h1>
+
+  {% comment %}Submit (button or Enter) fires the hx-get; on a hard nav the same URL
+     renders the full page with results already in #results.{% endcomment %}
+  <form hx-get="/search" hx-target="#results" hx-swap="innerHTML"
+        hx-push-url="true" role="search" class="mb-5">
+    <div class="field has-addons">
+      <div class="control is-expanded">
+        <input class="input" type="search" name="q" value="{{ q }}"
+               aria-label="Search your brain" aria-describedby="search-hint"
+               autofocus>
+      </div>
+      <div class="control">
+        <button class="button is-link" type="submit">Search</button>
+      </div>
+    </div>
+    <p id="search-hint" class="help">Hybrid semantic + keyword search across
+    everything you've stored.</p>
+  </form>
+
+  <div id="results" aria-live="polite">
+    {% include "brain/_results.html" %}
+  </div>
+{% endblock %}
+{% block extra_body %}
+  <script src="{% static 'vendor/htmx.min.js' %}"></script>
+  <script>
+    // Move focus to the results heading after an htmx swap so screen-reader and
+    // keyboard users land on the freshly-loaded results. The zero-result state
+    // omits the heading marker, leaving focus in the search field.
+    document.body.addEventListener('htmx:afterSwap', function (e) {
+      if (e.detail.target && e.detail.target.id === 'results') {
+        var heading = e.detail.target.querySelector('[data-results-heading]');
+        if (heading) heading.focus();
+      }
+    });
+  </script>
+{% endblock %}
