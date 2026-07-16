@@ -708,6 +708,7 @@ def test_review_queue_serializes(monkeypatch):
         "review_queue",
         lambda kind: {
             "merge_candidates": [],
+            "merge_candidates_deferred": 3,
             "low_confidence_claims": [],
             "contradictions": [],
             "disambiguations": [],
@@ -722,3 +723,4 @@ def test_review_queue_serializes(monkeypatch):
 
     sc = _run(go()).structured_content
     assert sc["merge_candidates"] == []
+    assert sc["merge_candidates_deferred"] == 3

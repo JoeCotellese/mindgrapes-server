@@ -130,6 +130,20 @@ def test_resolve_correction_drops_apply_only_fields_on_reject():
     assert apply.dispatched_tool == "rename_entity"
 
 
+def test_review_queue_result_advertises_deferred_count():
+    from openbrain.mcp.schemas import ReviewQueueResult
+
+    props = ReviewQueueResult.model_json_schema()["properties"]
+    assert "merge_candidates_deferred" in props
+    assert ReviewQueueResult(
+        merge_candidates=[],
+        low_confidence_claims=[],
+        contradictions=[],
+        disambiguations=[],
+        proposed_corrections=[],
+    ).merge_candidates_deferred == 0
+
+
 def test_review_queue_result_carries_jsonb_payloads():
     from openbrain.mcp.schemas import ReviewQueueResult
 

@@ -186,7 +186,7 @@ Idempotent: yes.
 Reversible: N/A (read-only).
 Side effects: none."""
 
-REVIEW_QUEUE = """Returns items awaiting human review across five surfaces: borderline merge_candidates, low-confidence inferred claims (confidence<0.6), contradictions (claims with superseded_by set but not yet retracted), pending disambiguations, and pending propose_correction rows. Pass kind to scope to one surface; default 'all' returns every queue.
+REVIEW_QUEUE = """Returns items awaiting human review across five surfaces: borderline merge_candidates, low-confidence inferred claims (confidence<0.6), contradictions (claims with superseded_by set but not yet retracted), pending disambiguations, and pending propose_correction rows. Pass kind to scope to one surface; default 'all' returns every queue. Zero-impact merge candidates (both sides claim-free concepts with at most one mention) are deferred rather than listed — merge_candidates_deferred carries their count, and each pair resurfaces automatically once either entity gains a mention or claim.
 
 Use when: starting a Phase-3-style reconciliation session, or periodically draining the queues so the brain doesn't accumulate uncertainty.
 Don't use when: the caller is looking for content matches — this surfaces queue state, not search hits. Use search_thoughts or list_thoughts instead.
