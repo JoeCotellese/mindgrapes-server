@@ -10,7 +10,7 @@ lexical search, and keeps full provenance so you can always ask "where did I
 learn that?" — and get an honest answer, including "that was inferred, not
 stated."
 
-(The name is a [30 Rock homage](https://30rock.fandom.com/wiki/Mind_Grapes).)
+<img width="400" height="226" alt="mind_grapes" src="https://github.com/user-attachments/assets/8dcd7f7c-f609-4f29-bd42-31f25dd495ca" />
 
 ## Status
 
