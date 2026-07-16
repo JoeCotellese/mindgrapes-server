@@ -167,6 +167,53 @@ def test_review_queue_scoped_skips_other_surfaces():
     assert q["contradictions"] == []
 
 
+# --- merge-candidate impact gate (mindgrapes-server#18) ------------------------
+
+
+def _seed_concept(mentions=0):
+    eid = _seed_entity(kind="concept")
+    for i in range(mentions):
+        _seed_mention(_seed_experience(f"ctx-{eid[:8]}-{i}"), eid, "tag", "topics")
+    return eid
+
+
+def test_review_queue_defers_zero_impact_concept_pair():
+    before = review_queue("merge_candidates")
+    mc = _seed_merge_candidate(_seed_concept(mentions=1), _seed_concept(mentions=1))
+    q = review_queue("merge_candidates")
+    assert mc not in {r["id"] for r in q["merge_candidates"]}
+    assert q["merge_candidates_deferred"] == before["merge_candidates_deferred"] + 1
+
+
+def test_review_queue_deferred_pair_resurfaces_with_claim():
+    a = _seed_concept(mentions=1)
+    b = _seed_concept(mentions=1)
+    mc = _seed_merge_candidate(a, b)
+    _seed_claim(a)
+    q = review_queue("merge_candidates")
+    assert mc in {r["id"] for r in q["merge_candidates"]}
+
+
+def test_review_queue_concept_pair_with_two_mentions_visible():
+    mc = _seed_merge_candidate(_seed_concept(mentions=2), _seed_concept(mentions=1))
+    q = review_queue("merge_candidates")
+    assert mc in {r["id"] for r in q["merge_candidates"]}
+
+
+def test_review_queue_person_pair_not_deferred():
+    mc = _seed_merge_candidate(_seed_entity(), _seed_entity())
+    q = review_queue("merge_candidates")
+    assert mc in {r["id"] for r in q["merge_candidates"]}
+
+
+def test_pending_reviews_count_excludes_deferred():
+    before = pending_reviews()["merge_candidates"]
+    _seed_merge_candidate(_seed_concept(mentions=1), _seed_concept(mentions=1))
+    assert pending_reviews()["merge_candidates"] == before
+    _seed_merge_candidate(_seed_entity(), _seed_entity())
+    assert pending_reviews()["merge_candidates"] == before + 1
+
+
 # --- propose / resolve_correction ---------------------------------------------
 
 

@@ -20,20 +20,56 @@ from openbrain.brain.services import entities
 DISAMBIGUATION_STATUS = "awaiting_user_disambiguation"
 
 
-def _load_merge_candidates(cursor) -> list[dict]:
+# Impact gate for pending merge candidates (mindgrapes-server#18): a pair of
+# claim-free, one-mention-or-less concepts carries no retrievable stakes, so it
+# is hidden — not resolved — and resurfaces on its own if either entity gains a
+# mention or claim. Mentions roll up over merged_into like _mention_counts so
+# the gate agrees with the counts the workbench displays. Fragment expects the
+# mc/ea/eb aliases; shared with mcp_reads._PENDING_REVIEWS_SQL so the badge
+# count matches the visible list.
+LOW_IMPACT_MERGE_SQL = """
+    ea.kind = 'concept' and eb.kind = 'concept'
+    and not exists (
+        select 1 from brain.claims c
+         where c.polarity <> 'retracted'
+           and (c.subject_id in (mc.entity_a, mc.entity_b)
+                or c.object_entity_id in (mc.entity_a, mc.entity_b)))
+    and (select count(distinct m.experience_id)
+           from brain.mentions m
+           join brain.entities me on me.id = m.entity_id
+          where coalesce(me.merged_into, me.id) = mc.entity_a) <= 1
+    and (select count(distinct m.experience_id)
+           from brain.mentions m
+           join brain.entities me on me.id = m.entity_id
+          where coalesce(me.merged_into, me.id) = mc.entity_b) <= 1
+"""
+
+
+def _load_merge_candidates(cursor) -> tuple[list[dict], int]:
+    # ponytail: correlated subqueries per pending pair — fine at review-queue
+    # scale, same rationale as _mention_counts.
     cursor.execute(
-        """
-        select id::text, entity_a::text as entity_a, entity_b::text as entity_b,
-               similarity, created_at
-          from brain.merge_candidates
-         where status = 'pending'
-         order by similarity desc, created_at
+        f"""
+        select mc.id::text, mc.entity_a::text as entity_a,
+               mc.entity_b::text as entity_b, mc.similarity, mc.created_at,
+               ({LOW_IMPACT_MERGE_SQL}) as low_impact
+          from brain.merge_candidates mc
+          join brain.entities ea on ea.id = mc.entity_a
+          join brain.entities eb on eb.id = mc.entity_b
+         where mc.status = 'pending'
+         order by mc.similarity desc, mc.created_at
         """
     )
     rows = dictfetchall(cursor)
+    visible: list[dict] = []
+    deferred = 0
     for row in rows:
+        if row.pop("low_impact"):
+            deferred += 1
+            continue
         row["similarity"] = float(row["similarity"])
-    return rows
+        visible.append(row)
+    return visible, deferred
 
 
 def _load_low_confidence_claims(cursor) -> list[dict]:
@@ -121,11 +157,18 @@ def review_queue(kind: str = "all") -> dict:
     """Return items awaiting human review across five surfaces.
 
     kind scopes to one surface; default 'all' returns every queue. Read-only.
+    merge_candidates_deferred counts the pending pairs hidden by the low-impact
+    gate (LOW_IMPACT_MERGE_SQL) so the truncation is visible, not silent.
     """
     result: dict = {key: [] for key, _ in _REVIEW_LOADERS}
+    result["merge_candidates_deferred"] = 0
     with brain_cursor() as cursor:
         for key, loader in _REVIEW_LOADERS:
-            if kind == "all" or kind == key:
+            if kind != "all" and kind != key:
+                continue
+            if key == "merge_candidates":
+                result[key], result["merge_candidates_deferred"] = loader(cursor)
+            else:
                 result[key] = loader(cursor)
     return result
 
