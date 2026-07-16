@@ -26,6 +26,9 @@
   {% if total == 0 %}
     <div class="notification is-success is-light" role="status">
       <strong>Inbox zero.</strong> Nothing left to review. 🎉
+      {% if deferred %}
+        <br><span class="is-size-7">{{ deferred }} low-impact pair{{ deferred|pluralize }} deferred — they reappear if an entity gains mentions or claims.</span>
+      {% endif %}
     </div>
   {% else %}
     <div class="tabs">
@@ -40,6 +43,13 @@
         {% endfor %}
       </ul>
     </div>
+
+    {% if active == "merge_candidates" and deferred %}
+      <p class="is-size-7 has-text-grey" id="deferred-note">
+        {{ deferred }} low-impact pair{{ deferred|pluralize }} deferred — claim-free
+        concepts with at most one mention reappear here if they gain either.
+      </p>
+    {% endif %}
 
     {# Filled out-of-band when an action empties the whole queue. #}
     <div id="review-flash"></div>

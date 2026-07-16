@@ -832,13 +832,14 @@ def _contradiction_row(cid="cl-1"):
     }
 
 
-def _patch_review(monkeypatch, *, counts, queue=None):
+def _patch_review(monkeypatch, *, counts, queue=None, deferred=0):
     """Make the /review view + badge context processor render against canned data."""
     queue = queue or {}
 
     def _review_queue(kind="all"):
         full = {
             "merge_candidates": [],
+            "merge_candidates_deferred": deferred,
             "low_confidence_claims": [],
             "contradictions": [],
             "disambiguations": [],
@@ -896,6 +897,31 @@ def test_review_renders_tabs_and_badge_for_superuser(client, admin, monkeypatch)
     assert 'id="review-badge"' in body
     assert "tag is-danger is-rounded" in body
     assert ">3<" in body
+
+
+def test_review_merge_surface_shows_deferred_note(client, admin, monkeypatch):
+    client.force_login(admin)
+    _patch_review(
+        monkeypatch,
+        counts=_counts(merge_candidates=1),
+        queue={"merge_candidates": [_merge_row()]},
+        deferred=41,
+    )
+    body = client.get(REVIEW_URL).content.decode()
+    assert "41 low-impact pairs deferred" in body
+
+
+def test_review_merge_surface_omits_deferred_note_when_zero(
+    client, admin, monkeypatch
+):
+    client.force_login(admin)
+    _patch_review(
+        monkeypatch,
+        counts=_counts(merge_candidates=1),
+        queue={"merge_candidates": [_merge_row()]},
+    )
+    body = client.get(REVIEW_URL).content.decode()
+    assert "low-impact" not in body
 
 
 def test_review_merge_row_has_confirm_reject_with_a11y_labels(
