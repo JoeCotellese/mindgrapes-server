@@ -4,6 +4,13 @@
 import json
 
 from openbrain.brain.db import dictfetchall
+from openbrain.brain.services.entities import merge_entities_on_cursor
+from openbrain.brain.services.name_matching import (
+    AUTO_MERGE_THRESHOLD,
+)
+from openbrain.brain.services.name_matching import (
+    match_score as verify_match_score,
+)
 
 # Policy applied to brain.resolve_entity's trgm_score (name-similarity, 0-1):
 #   trgm > 0.85          → existing entity, append surface_form to aliases
@@ -42,6 +49,11 @@ _INSERT_MENTION_SQL = """
     returning experience_id
 """
 
+_ENTITY_NAME_SQL = """
+    select canonical_name, aliases
+      from brain.entities where id = %s::uuid
+"""
+
 _INSERT_MERGE_CANDIDATE_SQL = """
     insert into brain.merge_candidates (entity_a, entity_b, similarity, evidence)
          values (
@@ -67,9 +79,12 @@ def resolve_or_create_entity(
     """Resolve surface to an existing entity or create a new one; return the outcome.
 
     The outcome dict carries surface/field/kind, the resolved entity_id, an
-    action ('matched' | 'created' | 'borderline'), the three resolver scores,
-    and — for 'borderline' only — borderline_entity_id (the existing entity the
-    new one might merge into).
+    action ('matched' | 'created' | 'borderline' | 'auto_merged'), the three
+    resolver scores, and — for 'borderline' / 'auto_merged' — the second-stage
+    verification_score. 'borderline' also carries borderline_entity_id (the
+    existing entity the new one might merge into); 'auto_merged' carries
+    merged_from_entity_id (the just-created entity that was soft-merged into the
+    returned entity_id) and resolves to the surviving entity.
     """
     cursor.execute(_RESOLVE_ENTITY_SQL, [surface, embedding, kind])
     candidates = dictfetchall(cursor)
@@ -84,6 +99,22 @@ def resolve_or_create_entity(
     new_id = dictfetchall(cursor)[0]["id"]
 
     if top and match_score > BORDERLINE_THRESHOLD:
+        # Second-stage verification: before parking a human decision, verify the
+        # new entity against the existing top candidate with the Jaro-Winkler /
+        # containment seam. A confident match is soft-auto-merged (audited,
+        # reversible via unmerge_entity); everything below queues exactly as
+        # before. The candidate row is recorded either way so a reversed
+        # auto-merge reopens into the queue rather than vanishing.
+        cursor.execute(_ENTITY_NAME_SQL, [top["entity_id"]])
+        existing = dictfetchall(cursor)[0]
+        verification = verify_match_score(
+            kind,
+            existing["canonical_name"],
+            existing["aliases"],
+            kind,
+            surface,
+            [surface],
+        )
         evidence = {
             "surface_form": surface,
             "experience_id": experience_id,
@@ -91,6 +122,7 @@ def resolve_or_create_entity(
             "vec_score": top["vec_score"],
             "phon_match": top["phon_match"],
             "fused_score": top["fused_score"],
+            "verification_score": verification,
         }
         cursor.execute(
             _INSERT_MERGE_CANDIDATE_SQL,
@@ -103,8 +135,25 @@ def resolve_or_create_entity(
                 json.dumps(evidence),
             ],
         )
+
+        if verification >= AUTO_MERGE_THRESHOLD:
+            merge_entities_on_cursor(
+                cursor,
+                new_id,
+                top["entity_id"],
+                reason=f"second-stage auto-merge (verification={verification:.3f})",
+                created_by="mcp:entity_resolver:auto_merge",
+            )
+            outcome = _outcome(
+                surface, field, kind, top["entity_id"], "auto_merged", top
+            )
+            outcome["merged_from_entity_id"] = new_id
+            outcome["verification_score"] = verification
+            return outcome
+
         outcome = _outcome(surface, field, kind, new_id, "borderline", top)
         outcome["borderline_entity_id"] = top["entity_id"]
+        outcome["verification_score"] = verification
         return outcome
 
     return _outcome(surface, field, kind, new_id, "created", top)
