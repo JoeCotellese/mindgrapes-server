@@ -19,6 +19,77 @@ from openbrain.brain.services import entities
 # surface the options to the user instead of guessing.
 DISAMBIGUATION_STATUS = "awaiting_user_disambiguation"
 
+# Context marker distinguishing a provisional-binding disambiguation — opened at
+# capture time by the capture-then-reconcile path (#8) — from a plain caller-driven
+# request_disambiguation. resolve_disambiguation keys its reconciliation on it.
+PROVISIONAL_BINDING_KIND = "provisional_binding"
+
+_INSERT_DISAMBIGUATION_ON_CURSOR_SQL = """
+    insert into brain.disambiguations (question, options, context)
+         values (%s, %s::jsonb, %s::jsonb)
+      returning token::text as token
+"""
+
+
+def open_provisional_binding_on_cursor(
+    cursor,
+    *,
+    experience_id: str,
+    surface: str,
+    field: str,
+    entity_kind: str,
+    candidate_entity_id: str,
+    candidate_name: str,
+    trgm_score: float,
+    verification_score: float,
+) -> dict:
+    """Open a provisional-binding disambiguation on the caller's cursor (#8).
+
+    Records — atomically with the capture, hence the on-cursor variant like
+    merge_entities_on_cursor — a pending disambiguation whose context links the
+    experience + mention to the best-guess entity it was bound to. Confirm keeps
+    the bind; reject repoints the mention onto a fresh entity. Returns the
+    needs_disambiguation block (token + question + options + candidate ids) the
+    capture response carries so the caller can reconcile without re-resolving.
+    """
+    options = [
+        {
+            "label": f"Same as {candidate_name}",
+            "value": {"action": "confirm", "entity_id": candidate_entity_id},
+        },
+        {
+            "label": f'Different — "{surface}" is another {entity_kind}',
+            "value": {"action": "reject"},
+        },
+    ]
+    question = (
+        f'Is "{surface}" the same {entity_kind} as the existing "{candidate_name}"?'
+    )
+    context = {
+        "kind": PROVISIONAL_BINDING_KIND,
+        "experience_id": experience_id,
+        "surface": surface,
+        "field": field,
+        "entity_kind": entity_kind,
+        "provisional_entity_id": candidate_entity_id,
+        "candidate_entity_ids": [candidate_entity_id],
+        "trgm_score": trgm_score,
+        "verification_score": verification_score,
+    }
+    cursor.execute(
+        _INSERT_DISAMBIGUATION_ON_CURSOR_SQL,
+        [question, json.dumps(options), json.dumps(context)],
+    )
+    token = dictfetchall(cursor)[0]["token"]
+    return {
+        "surface": surface,
+        "provisional_entity_id": candidate_entity_id,
+        "candidate_entity_ids": [candidate_entity_id],
+        "token": token,
+        "question": question,
+        "options": options,
+    }
+
 
 # Impact gate for pending merge candidates (mindgrapes-server#18): a pair of
 # claim-free, one-mention-or-less concepts carries no retrievable stakes, so it
@@ -557,14 +628,20 @@ def request_disambiguation(
 def resolve_disambiguation(token: str, choice) -> dict:
     """Apply the user's choice to a pending disambiguation token.
 
-    Writes NO correction_events: the brain.target_kind enum covers only
-    experience/claim/entity, and the disambiguations row itself (status,
-    resolved_at, resolved_choice) is the audit trail.
+    For a plain disambiguation this writes NO correction_events: the
+    disambiguations row itself (status, resolved_at, resolved_choice) is the audit
+    trail. For a provisional-binding token (#8) it additionally reconciles the
+    best-guess bind AFTER the token is stamped resolved and its transaction
+    commits — mirroring resolve_correction, so the reconciling repair runs in its
+    own transaction and never nests inside the token update. Reject repoints the
+    mention via split_entity (which audits); confirm leaves the bind in place. If
+    the reconciliation fails the token is reopened so the bind resurfaces in
+    review_queue for another attempt.
     """
     with transaction.atomic(), brain_cursor() as cursor:
         cursor.execute(
             """
-            select token::text as token, question, options, status
+            select token::text as token, question, options, context, status
               from brain.disambiguations where token = %s::uuid for update
             """,
             [token],
@@ -595,11 +672,58 @@ def resolve_disambiguation(token: str, choice) -> dict:
             [json.dumps(resolved), row["token"]],
         )
 
-    return {
+    context = parse_json(row["context"]) if row.get("context") else {}
+    result = {
         "token": row["token"],
         "resolved_choice": resolved,
         "question": row["question"],
     }
+    if context.get("kind") == PROVISIONAL_BINDING_KIND:
+        try:
+            result["reconciliation"] = _reconcile_provisional_binding(context, resolved)
+        except Exception:
+            try:
+                with brain_cursor() as cursor:
+                    cursor.execute(
+                        """
+                        update brain.disambiguations
+                           set status = 'pending', resolved_choice = null,
+                               resolved_at = null
+                         where token = %s::uuid and status = 'resolved'
+                        """,
+                        [row["token"]],
+                    )
+            except Exception:
+                pass
+            raise
+    return result
+
+
+def _reconcile_provisional_binding(context: dict, resolved: dict) -> dict:
+    """Apply a resolved provisional-binding choice (#8).
+
+    confirm leaves the best-guess bind in place — the mention already points at
+    the provisional entity, so there is nothing to move. reject repoints the
+    mention onto a fresh entity for the surface via split_entity, undoing the
+    guess with a correction_events audit trail.
+    """
+    action = (resolved.get("value") or {}).get("action")
+    provisional_entity_id = context["provisional_entity_id"]
+    if action == "confirm":
+        return {"action": "confirmed", "entity_id": provisional_entity_id}
+    if action == "reject":
+        outcome = entities.split_entity(
+            provisional_entity_id,
+            [context["experience_id"]],
+            {"canonical_name": context["surface"], "kind": context["entity_kind"]},
+            reason="provisional binding rejected via resolve_disambiguation",
+            created_by="mcp:resolve_disambiguation:reject",
+        )
+        return {"action": "repointed", **outcome}
+    raise ValueError(
+        "resolve_disambiguation: provisional-binding choice carries no "
+        f"confirm/reject action: {resolved!r}"
+    )
 
 
 def fold_notes_into_metadata(into: dict) -> dict:

@@ -48,6 +48,29 @@ AUTO_MERGE_THRESHOLD = 0.92
 # it never outranks an exact full-name match in any downstream ordering.
 CONTAINMENT_SCORE = 0.95
 
+# Recommendation cut-points applied to resolve_entity's top trgm_score (name
+# similarity, 0-1). These are the single source of truth for the capture-then-
+# reconcile bands (#8): the resolve_entity tool advertises the banding as a
+# `recommendation`, and the capture-time resolver reuses the same two constants
+# for its reuse / provisional / create split — so retuning them here retunes both.
+REUSE_THRESHOLD = 0.85
+DISAMBIGUATE_THRESHOLD = 0.55
+
+
+def recommend_action(trgm_score: float) -> str:
+    """Band a top trgm_score into 'reuse' / 'disambiguate' / 'create' (#8).
+
+    trgm > REUSE_THRESHOLD reuses the existing entity; a score in the
+    (DISAMBIGUATE_THRESHOLD, REUSE_THRESHOLD] borderline band recommends
+    disambiguation; anything at/below DISAMBIGUATE_THRESHOLD (including a missing
+    candidate, which scores 0) recommends creating a fresh entity.
+    """
+    if trgm_score > REUSE_THRESHOLD:
+        return "reuse"
+    if trgm_score > DISAMBIGUATE_THRESHOLD:
+        return "disambiguate"
+    return "create"
+
 _PERSON = "person"
 _NON_ALNUM = re.compile(r"[^a-z0-9]+")
 

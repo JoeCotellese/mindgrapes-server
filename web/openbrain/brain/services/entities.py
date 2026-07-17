@@ -20,6 +20,7 @@ from openbrain.brain.db import (
     to_vector_literal,
 )
 from openbrain.brain.embeddings import embed_query
+from openbrain.brain.services.name_matching import recommend_action
 
 EntityKind = ("person", "org", "event", "place", "concept")
 
@@ -577,4 +578,12 @@ def resolve_entity(
         row["vec_score"] = float(row["vec_score"])
         row["fused_score"] = float(row["fused_score"])
 
-    return {"query_name": name, "query_kind": kind, "candidates": candidates}
+    # Band the top candidate's name-similarity server-side so the 0.85/0.55
+    # cut-points live in one place (#8), not replicated across client prompts.
+    top_trgm = candidates[0]["trgm_score"] if candidates else 0.0
+    return {
+        "query_name": name,
+        "query_kind": kind,
+        "candidates": candidates,
+        "recommendation": recommend_action(top_trgm),
+    }

@@ -13,6 +13,7 @@ from openbrain.brain.services.entity_resolver import (
     link_mention,
     resolve_or_create_entity,
 )
+from openbrain.brain.services.reviews import open_provisional_binding_on_cursor
 
 # Same 11 columns + 'pending' status as edits.py's superseding insert. source_kind
 # and account_id/visibility coalesce to the brain defaults when null.
@@ -169,7 +170,7 @@ def _structured_capture(
             ],
         )
         experience_id = dictfetchall(cursor)[0]["id"]
-        extracted, borderline = _resolve_participants(
+        extracted, borderline, needs_disambiguation = _resolve_participants(
             cursor, experience_id, embedding_lit, parts
         )
 
@@ -179,19 +180,25 @@ def _structured_capture(
         "metadata": _echo_metadata(predicate_hints, source_kind, source_ref),
         "extracted_entities": extracted,
         "borderline_matches": borderline,
+        "needs_disambiguation": needs_disambiguation,
         "claims_pending": True,
     }
 
 
 def _resolve_participants(cursor, experience_id, embedding_lit, parts):
-    """Resolve/link each participant inside the open txn; return (extracted, borderline).
+    """Resolve/link each participant inside the open txn.
 
-    A provided entity_id is validated (not merged) and linked directly; otherwise
-    the name is resolved against existing entities. An invalid entity_id raises,
-    rolling the whole insert back.
+    Returns (extracted, borderline, needs_disambiguation). A provided entity_id is
+    validated (not merged) and linked directly; otherwise the name is resolved
+    against existing entities. A borderline best-guess bind (#8) is flagged
+    provisional and opens a disambiguation token — recorded on this same cursor so
+    it commits with the capture — that the caller reconciles. An invalid entity_id
+    raises, rolling the whole insert back. borderline_matches is retained (empty)
+    for backward compatibility with the shipped result shape.
     """
     extracted: list[dict] = []
     borderline: list[dict] = []
+    needs_disambiguation: list[dict] = []
 
     for participant in parts:
         surface = (participant.get("name") or "").strip()
@@ -207,7 +214,12 @@ def _resolve_participants(cursor, experience_id, embedding_lit, parts):
                 )
             link_mention(cursor, experience_id, entity_id, surface, "people")
             extracted.append(
-                {"surface": surface, "entity_id": entity_id, "action": "provided"}
+                {
+                    "surface": surface,
+                    "entity_id": entity_id,
+                    "action": "provided",
+                    "provisional": False,
+                }
             )
             continue
 
@@ -219,25 +231,32 @@ def _resolve_participants(cursor, experience_id, embedding_lit, parts):
             field="people",
             kind="person",
         )
+        provisional = outcome["action"] == "provisional"
         link_mention(cursor, experience_id, outcome["entity_id"], surface, "people")
         extracted.append(
             {
                 "surface": surface,
                 "entity_id": outcome["entity_id"],
                 "action": outcome["action"],
+                "provisional": provisional,
             }
         )
-        if outcome["action"] == "borderline" and outcome.get("borderline_entity_id"):
-            borderline.append(
-                {
-                    "surface": surface,
-                    "new_entity_id": outcome["entity_id"],
-                    "candidate_entity_id": outcome["borderline_entity_id"],
-                    "trgm_score": outcome["trgm_score"],
-                }
+        if provisional:
+            needs_disambiguation.append(
+                open_provisional_binding_on_cursor(
+                    cursor,
+                    experience_id=experience_id,
+                    surface=surface,
+                    field="people",
+                    entity_kind=outcome["kind"],
+                    candidate_entity_id=outcome["candidate_entity_id"],
+                    candidate_name=outcome["candidate_name"],
+                    trgm_score=outcome["trgm_score"],
+                    verification_score=outcome["verification_score"],
+                )
             )
 
-    return extracted, borderline
+    return extracted, borderline, needs_disambiguation
 
 
 def _echo_metadata(predicate_hints, source_kind, source_ref) -> dict:

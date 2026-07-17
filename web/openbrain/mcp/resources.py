@@ -12,39 +12,47 @@ def workflows_document() -> dict:
                 "name": "capture_with_dedup",
                 "description": (
                     "Capture a new experience without creating duplicate entities "
-                    "for named participants. Resolve each participant first; reuse "
-                    "the existing id when the match is strong, surface options when "
-                    "borderline."
+                    "for named participants. The common path is one call: "
+                    "capture_thought resolves each name server-side (reuse / "
+                    "provisional-bind / create), so no resolve_entity pre-call is "
+                    "needed. Only reconcile when the result asks — a "
+                    "needs_disambiguation block means the server made a borderline "
+                    "best guess and wants a human decision."
                 ),
                 "steps": [
                     {
-                        "tool": "resolve_entity",
-                        "when": (
-                            "BEFORE capture, for every named participant. Inspect "
-                            "the top trgm_score."
-                        ),
-                        "args_hint": {"name": "<participant name>", "kind": "person"},
-                    },
-                    {
-                        "tool": "request_disambiguation",
-                        "when": (
-                            "top trgm_score is in the 0.55–0.85 borderline band. "
-                            "Surface options to the user verbatim."
-                        ),
-                    },
-                    {
                         "tool": "capture_thought",
                         "when": (
-                            "high-confidence match (reuse entity_id) OR no match "
-                            "(create fresh). Pass participants with entity_id when "
-                            "matched, name-only when new."
+                            "always, for the capture itself. Pass participants by "
+                            "name; the server resolves each one (strong match → "
+                            "reuse, clear miss → create, borderline → bind to the "
+                            "best guess flagged provisional). Pass an explicit "
+                            "entity_id only when you already resolved it yourself."
                         ),
                         "args_hint": {
                             "content": "<thought>",
-                            "participants": [
-                                {"name": "<name>", "entity_id": "<uuid-if-matched>"}
-                            ],
+                            "participants": [{"name": "<name>"}],
                         },
+                    },
+                    {
+                        "tool": "resolve_disambiguation",
+                        "when": (
+                            "ONLY when the capture_thought result carries a "
+                            "needs_disambiguation block. Surface its options to the "
+                            "user verbatim, then feed the choice back with the block's "
+                            "token — confirm keeps the provisional bind, reject "
+                            "repoints the mention to a new entity."
+                        ),
+                        "args_hint": {"token": "<token>", "choice": "<user choice>"},
+                    },
+                    {
+                        "tool": "resolve_entity",
+                        "when": (
+                            "OPTIONAL, before capture, only when you want the "
+                            "server's reuse/disambiguate/create recommendation for a "
+                            "name up front — e.g. to pass an explicit entity_id."
+                        ),
+                        "args_hint": {"name": "<participant name>", "kind": "person"},
                     },
                 ],
             },

@@ -44,15 +44,15 @@ def test_resolve_matched_appends_alias():
     assert alias_params == ["Grace", "Grace", EXISTING]
 
 
-def test_resolve_borderline_creates_entity_and_merge_candidate():
+def test_resolve_borderline_binds_provisional_to_best_guess():
     # Existing top is a bare given name that does NOT verify against "Jon"
-    # (person single-token pair → verification 0.0), so the pair still queues.
+    # (person single-token pair → verification 0.0). Below the auto-merge bar the
+    # surface is provisionally bound to the best guess (the existing entity); no
+    # duplicate entity is minted and no merge_candidate is queued.
     cursor = StubCursor(
         [
             (_RESOLVE_COLS, [_resolve_row(0.70)]),  # resolve_entity (in 0.55..0.85)
-            (["id"], [(NEW,)]),  # insert entity returning id
             (["canonical_name", "aliases"], [("Jonas", [])]),  # fetch top name
-            (["id"], [("mc-1",)]),  # insert merge candidate
         ]
     )
 
@@ -60,26 +60,21 @@ def test_resolve_borderline_creates_entity_and_merge_candidate():
         cursor, EXP, _EMB, surface="Jon", field="people", kind="person"
     )
 
-    assert outcome["action"] == "borderline"
-    assert outcome["entity_id"] == NEW
-    assert outcome["borderline_entity_id"] == EXISTING
+    assert outcome["action"] == "provisional"
+    assert outcome["provisional"] is True
+    assert outcome["entity_id"] == EXISTING  # bound to the best guess, not a new row
+    assert outcome["candidate_entity_id"] == EXISTING
     assert outcome["verification_score"] == 0.0
-    mc_sql, mc_params = cursor.calls[3]
-    assert "merge_candidates" in mc_sql
-    # least/greatest ordering reuses both ids, then similarity + evidence jsonb.
-    assert mc_params[:4] == [EXISTING, NEW, EXISTING, NEW]
-    assert mc_params[4] == 0.70
-    evidence = json.loads(mc_params[5])
-    assert evidence["surface_form"] == "Jon"
-    assert evidence["experience_id"] == EXP
-    assert evidence["verification_score"] == 0.0
+    # Exactly two queries: resolve + fetch-top-name. No INSERT, no merge_candidate.
+    assert len(cursor.calls) == 2
+    assert all("insert" not in sql.lower() for sql, _ in cursor.calls)
 
 
 def test_resolve_borderline_auto_merges_on_confident_verification(monkeypatch):
     # trgm lands in the borderline band (would queue today), but the second-stage
-    # seam verifies "John Smith" against the existing "Jon Smith" at ~0.97 → the
-    # new entity is soft-auto-merged into the existing one via the shared merge
-    # core instead of queueing.
+    # seam verifies "John Smith" against the existing "Jon Smith" at ~0.97 → a
+    # fresh entity is soft-auto-merged into the existing one via the shared merge
+    # core instead of queueing. Verification runs BEFORE the entity is minted.
     merge_calls = []
 
     def _record_merge(cur, loser, winner, **kwargs):
@@ -94,8 +89,8 @@ def test_resolve_borderline_auto_merges_on_confident_verification(monkeypatch):
     cursor = StubCursor(
         [
             (_RESOLVE_COLS, [_resolve_row(0.70)]),  # resolve_entity (in band)
-            (["id"], [(NEW,)]),  # insert entity returning id
             (["canonical_name", "aliases"], [("Jon Smith", [])]),  # fetch top name
+            (["id"], [(NEW,)]),  # insert entity returning id
             (["id"], [("mc-1",)]),  # insert merge candidate (pending)
         ]
     )
@@ -108,8 +103,13 @@ def test_resolve_borderline_auto_merges_on_confident_verification(monkeypatch):
     assert outcome["entity_id"] == EXISTING  # mentions link to the surviving entity
     assert outcome["merged_from_entity_id"] == NEW
     assert outcome["verification_score"] >= 0.92
-    # The candidate row was recorded (pending) before the merge core flipped it.
-    assert "merge_candidates" in cursor.calls[3][0]
+    # The candidate row is recorded (pending) before the merge core flips it.
+    mc_sql, mc_params = cursor.calls[3]
+    assert "merge_candidates" in mc_sql
+    assert mc_params[:4] == [EXISTING, NEW, EXISTING, NEW]
+    evidence = json.loads(mc_params[5])
+    assert evidence["surface_form"] == "John Smith"
+    assert evidence["experience_id"] == EXP
     # Loser is the freshly-created entity; winner is the existing top.
     assert merge_calls == [(NEW, EXISTING, merge_calls[0][2])]
     assert merge_calls[0][2]["created_by"] == "mcp:entity_resolver:auto_merge"

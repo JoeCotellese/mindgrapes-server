@@ -9,7 +9,7 @@ Reading — pick the tool by intent:
 - list_thoughts: deterministic metadata scans (type / topic / person / last-N-days).
 Before reporting "nothing found", broaden the query or try another read.
 
-Writing — capture proactively. Use capture_thought for decisions, findings, identity context, and outcomes worth remembering, written as standalone self-identifying statements. For named people, call resolve_entity (or pass structured participants) first so you don't create duplicate entities.
+Writing — capture proactively. Use capture_thought for decisions, findings, identity context, and outcomes worth remembering, written as standalone self-identifying statements. For named people, just pass structured participants — capture_thought resolves each name server-side (reuse / provisional-bind / create) and only asks you to disambiguate when it returns a needs_disambiguation block. A pre-call to resolve_entity is optional, for when you want the recommendation before capturing.
 
 Maintenance — periodically drain review_queue so merges, low-confidence claims, and disambiguations don't accumulate.
 
@@ -63,16 +63,18 @@ Idempotent: yes.
 Reversible: N/A (read-only).
 Side effects: none — unlike search_thoughts / recall_recent, this does not write a brain.recall_events row."""
 
-CAPTURE_THOUGHT = """Save a new experience to the brain. Bare form (just `content`) generates an embedding and runs server-side LLM metadata extraction synchronously. Structured form (any of occurred_at / participants / predicate_hints / source_kind / source_ref) skips LLM extraction for the provided fields, resolves participants to brain.entities synchronously, and returns the new experience_id plus extracted/borderline entity info. Claim extraction always runs asynchronously via pg_cron. An optional `visibility` ('private' default — only the owner; 'shared' — readable by other household members) sets who can read it; every capture is stamped with the authenticated member as owner.
+CAPTURE_THOUGHT = """Save a new experience to the brain. Bare form (just `content`) generates an embedding and runs server-side LLM metadata extraction synchronously. Structured form (any of occurred_at / participants / predicate_hints / source_kind / source_ref) skips LLM extraction for the provided fields, resolves participants to brain.entities synchronously, and returns the new experience_id plus per-participant entity info. Claim extraction always runs asynchronously via pg_cron. An optional `visibility` ('private' default — only the owner; 'shared' — readable by other household members) sets who can read it; every capture is stamped with the authenticated member as owner.
+
+Participant resolution is capture-then-reconcile (#8) — no resolve_entity pre-call needed. Each named participant resolves server-side to one of: a strong match (bound to the existing entity), a clear miss (a fresh entity is created), or a borderline best-guess (bound to the most-likely entity but flagged `provisional: true`). For each provisional bind the result carries a `needs_disambiguation` block with the candidate ids, a question/options, and a request_disambiguation token — surface those to the user and feed the choice back through resolve_disambiguation, which reconciles the bind (confirm keeps it; reject repoints the mention to a new entity). Provisional binds also queue in review_queue, so an unresolved guess is never silent. Pre-resolved participants passed with an explicit `entity_id` are always linked directly and never provisional.
 
 Use when: the caller has a standalone, self-identifying statement worth remembering — a decision, a finding, identity context, a meeting outcome. Pass structured fields whenever the caller already knows them (process-meeting skill, transcript ingestion) so extraction can't hallucinate them.
-Don't use when: the same fact is already captured (search_thoughts first to dedupe), the content is a transient code edit or intermediate debugging step, or the caller is mid-stream and could batch the capture later. For named participants, call resolve_entity first so duplicates are not created.
+Don't use when: the same fact is already captured (search_thoughts first to dedupe), the content is a transient code edit or intermediate debugging step, or the caller is mid-stream and could batch the capture later.
 On empty result: N/A (this is a write).
 
 Cost: medium (one embedding call + bare form runs a synchronous LLM metadata extraction; structured form is faster).
 Idempotent: no (each call writes a new experience).
-Reversible: partially — content is immutable by spec, but occurred_at/metadata/source_ref can be edited via update_experience and inferred claims can be retracted via retract_claim.
-Side effects: writes brain.experiences (legacy public.thoughts is now a view that reflects this row, stamped with owner + visibility), enqueues async claim extraction."""
+Reversible: partially — content is immutable by spec, but occurred_at/metadata/source_ref can be edited via update_experience, inferred claims can be retracted via retract_claim, and a provisional participant bind is reconciled via resolve_disambiguation.
+Side effects: writes brain.experiences (legacy public.thoughts is now a view that reflects this row, stamped with owner + visibility), links brain.mentions, opens a brain.disambiguations row per provisional bind, enqueues async claim extraction."""
 
 MERGE_ENTITIES = """Soft-merge a duplicate (loser) entity into the canonical (winner) entity. The loser's canonical_name and aliases are appended to the winner's aliases; loser.merged_into points at winner so existing claims and mentions follow the merge pointer at read time.
 
@@ -175,11 +177,11 @@ Idempotent: yes.
 Reversible: N/A (read-only).
 Side effects: none."""
 
-RESOLVE_ENTITY = """Fuzzy + phonetic + semantic candidate lookup for a name. Returns ranked candidates with per-channel scores (trgm_score for name similarity, phon_match for dmetaphone equality, vec_score from embedding cosine, fused_score via reciprocal-rank fusion). Pass context_text to bias the embedding channel toward the right person when several share a name.
+RESOLVE_ENTITY = """Fuzzy + phonetic + semantic candidate lookup for a name. Returns ranked candidates with per-channel scores (trgm_score for name similarity, phon_match for dmetaphone equality, vec_score from embedding cosine, fused_score via reciprocal-rank fusion) plus a server-computed `recommendation` — 'reuse', 'disambiguate', or 'create' — banded from the top candidate's trgm_score. The 0.85/0.55 cut-points live server-side (one place to retune), so the recommendation is authoritative; callers no longer replicate the threshold logic. Pass context_text to bias the embedding channel toward the right person when several share a name.
 
-Use when: BEFORE asserting an entity exists or capturing a named participant — call this, inspect the top trgm_score, then either (a) reuse the existing id when >0.85, (b) request_disambiguation when 0.55–0.85, or (c) create a new entity (via capture_thought with that participant) when below.
-Don't use when: the caller wants every entity mentioned in one experience (whoWasAt) or graph reachability (relationships_to) — those are different shapes.
-On empty result: the name is genuinely new; proceed to capture_thought, which will create the entity. Do not silently invent an id.
+Use when: you want the recommendation before capturing — e.g. to decide whether to pass an explicit entity_id to capture_thought. This is now OPTIONAL: capture_thought resolves and provisional-binds participants itself, so a pre-call is only worth it when you want to inspect candidates first. On 'reuse' pass the top entity_id; on 'disambiguate' surface the options; on 'create' just capture the name.
+Don't use when: you're capturing a named participant and are happy to let the server resolve it (skip straight to capture_thought), or the caller wants every entity mentioned in one experience (who_was_at) or graph reachability (relationships_to) — those are different shapes.
+On empty result: no candidates and recommendation='create'; the name is genuinely new. Proceed to capture_thought, which will create the entity. Do not silently invent an id.
 
 Cost: low.
 Idempotent: yes.
@@ -188,7 +190,9 @@ Side effects: none."""
 
 REVIEW_QUEUE = """Returns items awaiting human review across five surfaces: borderline merge_candidates, low-confidence inferred claims (confidence<0.6), contradictions (claims with superseded_by set but not yet retracted), pending disambiguations, and pending propose_correction rows. Pass kind to scope to one surface; default 'all' returns every queue. Zero-impact merge candidates (both sides claim-free concepts with at most one mention) are deferred rather than listed — merge_candidates_deferred carries their count, and each pair resurfaces automatically once either entity gains a mention or claim.
 
-Use when: starting a Phase-3-style reconciliation session, or periodically draining the queues so the brain doesn't accumulate uncertainty.
+Provisional participant binds from capture-then-reconcile (#8) surface in the disambiguations lane: capture_thought opens a pending brain.disambiguations token for every borderline best-guess bind, so the backlog of guesses shows up here rather than staying buried in a capture response no one re-reads. Drain them with resolve_disambiguation (confirm keeps the bind; reject repoints the mention).
+
+Use when: starting a Phase-3-style reconciliation session, or periodically draining the queues so the brain doesn't accumulate uncertainty — including provisional participant binds.
 Don't use when: the caller is looking for content matches — this surfaces queue state, not search hits. Use search_thoughts or list_thoughts instead.
 On empty result: the queues are clean — that's a healthy outcome, not an error. Don't suggest a fallback; report the empty state plainly.
 
@@ -230,13 +234,13 @@ Idempotent: no (each call creates a fresh disambiguation row).
 Reversible: yes — leave the token unresolved or resolve it with the corrective choice.
 Side effects: writes brain.disambiguations."""
 
-RESOLVE_DISAMBIGUATION = """Apply the user's choice to a pending disambiguation token. Pass either the option's index (number), its label (string), or the matching {label, value} object.
+RESOLVE_DISAMBIGUATION = """Apply the user's choice to a pending disambiguation token. Pass either the option's index (number), its label (string), or the matching {label, value} object. When the token was opened by capture_thought for a provisional participant bind (#8), this also reconciles the bind: choosing the 'same as' option confirms it (the mention stays on the best-guess entity); choosing the 'different' option repoints the mention onto a fresh entity via split_entity. The result carries a `reconciliation` block on those tokens.
 
-Use when: closing the loop after request_disambiguation surfaced options to the user — feed the user's literal choice through; don't reinterpret.
-Don't use when: the original disambiguation has already been resolved (the call will error) or when the user declined to choose (leave the token unresolved so it shows up in review_queue).
+Use when: closing the loop after request_disambiguation — or a capture_thought needs_disambiguation block — surfaced options to the user; feed the user's literal choice through, don't reinterpret.
+Don't use when: the original disambiguation has already been resolved (the call will error) or when the user declined to choose (leave the token unresolved so it stays in review_queue).
 On empty result: N/A (this is a write).
 
-Cost: low.
+Cost: low (plus a split_entity repoint when a provisional bind is rejected).
 Idempotent: no (errors if the token is already resolved).
-Reversible: yes via the recorded correction_events row keyed on the token.
-Side effects: writes brain.disambiguations and brain.correction_events."""
+Reversible: the token flip is audited by the disambiguations row itself; a reject's repoint is reversible via its own correction_events row (split back). If reconciliation fails after the token is stamped, the token is reopened so the bind resurfaces in review_queue.
+Side effects: writes brain.disambiguations; on a rejected provisional bind also writes brain.mentions/brain.claims/brain.entities + brain.correction_events via split_entity."""

@@ -377,6 +377,28 @@ def test_resolve_entity_ranks_candidate_by_name():
     assert isinstance(top["fused_score"], float)
 
 
+@override_settings(
+    BRAIN_EMBED_FN="openbrain.brain.tests.integration.test_entities._zero_embed"
+)
+def test_resolve_entity_recommends_reuse_on_exact_name():
+    # An exact-name candidate scores trgm 1.0 → the server bands it 'reuse', so the
+    # caller no longer replicates the 0.85 cut-point (#8).
+    _seed_entity(kind="person", canonical_name="Quilbrimhaven Xotl")
+    res = resolve_entity("Quilbrimhaven Xotl", kind="person", top_k=5)
+    assert res["recommendation"] == "reuse"
+
+
+@override_settings(
+    BRAIN_EMBED_FN="openbrain.brain.tests.integration.test_entities._zero_embed"
+)
+def test_resolve_entity_recommends_create_when_name_is_new():
+    # A name with no candidate (or only a distant one) bands 'create'.
+    res = resolve_entity(
+        f"Zznovel {uuid.uuid4().hex}", kind="person", top_k=5
+    )
+    assert res["recommendation"] == "create"
+
+
 # --- #171: alias scoring is per-alias, not against a concatenated haystack ---
 #
 # These call brain.resolve_entity directly with a NULL context embedding so the vec
@@ -670,30 +692,37 @@ def test_borderline_confident_verification_auto_merges_and_is_reversible():
     )
 
 
-def test_borderline_weak_verification_still_queues():
+def test_borderline_weak_verification_binds_provisional():
     # similarity('Vorptangle','Zorptangle') ≈ 0.57 (in band) but a single-token
-    # person pair verifies at 0.0 — it must queue, not auto-merge, exactly as before.
+    # person pair verifies at 0.0 — below the auto-merge bar it is provisionally
+    # bound to the best guess (#8): no duplicate entity is minted, no
+    # merge_candidate is queued, and it resolves to the existing entity.
     existing = _seed_entity(kind="person", canonical_name="Zorptangle")
     exp = _seed_experience()
 
     outcome = _resolve_new("Vorptangle", "person", exp)
 
-    assert outcome["action"] == "borderline"
-    assert outcome["borderline_entity_id"] == existing
+    assert outcome["action"] == "provisional"
+    assert outcome["provisional"] is True
+    assert outcome["entity_id"] == existing  # bound to the best guess
+    assert outcome["candidate_entity_id"] == existing
+    assert outcome["candidate_name"] == "Zorptangle"
     assert outcome["verification_score"] < 0.92
-    new_id = outcome["entity_id"]
-    assert (
-        _scalar("select merged_into from brain.entities where id=%s::uuid", [new_id])
-        is None
-    )
-    lo, hi = sorted([existing, new_id])
+    # No fresh "Vorptangle" entity was created…
     assert (
         _scalar(
-            "select status from brain.merge_candidates "
-            "where entity_a=%s::uuid and entity_b=%s::uuid",
-            [lo, hi],
+            "select count(*) from brain.entities where canonical_name=%s", ["Vorptangle"]
         )
-        == "pending"
+        == 0
+    )
+    # …and no merge_candidate was queued for the existing entity.
+    assert (
+        _scalar(
+            "select count(*) from brain.merge_candidates "
+            "where entity_a=%s::uuid or entity_b=%s::uuid",
+            [existing, existing],
+        )
+        == 0
     )
 
 
