@@ -66,6 +66,8 @@ language sql stable as $$
        and (dmetaphone(e.canonical_name) = dmetaphone(p_name)
             -- alias-aware like the trgm channel (#171): an alias may phon-match even when
             -- the canonical name does not — e.g. 'Ada Lovelace' via its alias 'Ada'.
+            -- dmetaphone is unindexed, so this filters the kind-scoped set row by row
+            -- before the limit — same seq-scan class as the trgm unnest; revisit ~100k.
             or exists (select 1 from unnest(e.aliases) a
                         where dmetaphone(a) = dmetaphone(p_name)))
      limit 50
@@ -88,10 +90,11 @@ language sql stable as $$
            coalesce(v.score, 0)        as vec_score,
            (
              coalesce(1.0 / (60 + t.rnk), 0)
-             -- Tiebreak only: one RRF step at k=60 is 1/61 - 1/62 ≈ 0.000264, so this
-             -- bonus must stay below 0.000264 or a phon-only match could displace an
-             -- adjacent-rank trgm match. 0.0001 breaks genuine ties without ever moving
-             -- a trgm rank (#17).
+             -- Tiebreak only: the top-rank RRF step at k=60 is 1/61 - 1/62 ≈ 0.000264,
+             -- so this bonus must stay below 0.000264 or a phon-only match could
+             -- displace a top-ranked trgm match (#17). Steps shrink with rank and dip
+             -- under 0.0001 past rank ~40, so deep ranks can still reorder — harmless
+             -- while callers take top_k <= 5; shrink the bonus if that changes.
              + case when p.is_match then 0.0001 else 0 end
              + coalesce(1.0 / (60 + v.rnk), 0)
            )::real as fused_score
