@@ -188,11 +188,13 @@ Idempotent: yes.
 Reversible: N/A (read-only).
 Side effects: none."""
 
-REVIEW_QUEUE = """Returns items awaiting human review across five surfaces: borderline merge_candidates, low-confidence inferred claims (confidence<0.6), contradictions (claims with superseded_by set but not yet retracted), pending disambiguations, and pending propose_correction rows. Pass kind to scope to one surface; default 'all' returns every queue. Zero-impact merge candidates (both sides claim-free concepts with at most one mention) are deferred rather than listed — merge_candidates_deferred carries their count, and each pair resurfaces automatically once either entity gains a mention or claim.
+REVIEW_QUEUE = """Returns items awaiting human review across six surfaces: borderline merge_candidates, low-confidence inferred claims (confidence<0.6), contradictions (claims with superseded_by set but not yet retracted), pending disambiguations, pending propose_correction rows, and split_candidates (over-connected "god node" entities). Pass kind to scope to one surface; default 'all' returns every queue. Zero-impact merge candidates (both sides claim-free concepts with at most one mention) are deferred rather than listed — merge_candidates_deferred carries their count, and each pair resurfaces automatically once either entity gains a mention or claim.
 
 Provisional participant binds from capture-then-reconcile (#8) surface in the disambiguations lane: capture_thought opens a pending brain.disambiguations token for every borderline best-guess bind, so the backlog of guesses shows up here rather than staying buried in a capture response no one re-reads. Drain them with resolve_disambiguation (confirm keeps the bind; reject repoints the mention).
 
-Use when: starting a Phase-3-style reconciliation session, or periodically draining the queues so the brain doesn't accumulate uncertainty — including provisional participant binds.
+split_candidates (#15) is a read-time degree pass over the claim graph: it counts the non-retracted claims incident on each entity (following merged_into so a soft-merge survivor accumulates its losers' degree) and surfaces the top-N most-connected as {entity_id, canonical_name, kind, degree}. A high degree flags a junk-drawer entity that may bury retrieval; act on it with the separate, human-initiated split_entity — the pass itself never mutates. Mechanical hubs central by bookkeeping rather than meaning (e.g. the owner "self" node) are excluded by a server-side name list, so a flagged entity is a genuine over-collapse candidate, not a legitimately central one.
+
+Use when: starting a Phase-3-style reconciliation session, or periodically draining the queues so the brain doesn't accumulate uncertainty — including provisional participant binds and over-collapsed entities.
 Don't use when: the caller is looking for content matches — this surfaces queue state, not search hits. Use search_thoughts or list_thoughts instead.
 On empty result: the queues are clean — that's a healthy outcome, not an error. Don't suggest a fallback; report the empty state plainly.
 

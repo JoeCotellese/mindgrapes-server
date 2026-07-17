@@ -143,6 +143,81 @@ def _load_merge_candidates(cursor) -> tuple[list[dict], int]:
     return visible, deferred
 
 
+# --- god-node (split candidate) detection (mindgrapes-server#15) --------------
+#
+# Over-connected entities are "junk drawers" that bury retrieval; surfacing the
+# most claim-connected ones lets a human split them via the existing split_entity
+# tool. The pass is READ-ONLY — it computes degree at read time and writes nothing
+# (no cache, no table). Splitting stays a separate, human-initiated call.
+#
+# These three constants are the single tuning point for the pass. They ship
+# deliberately conservative because the dev DB is near-empty; the live-brain
+# ≥60% precision review (#15) tunes them post-deploy — start with the exclusion
+# set, then the degree floor.
+
+# Top-N most-connected entities to surface. Parameterized into the query (not
+# string-interpolated) per the #15 sketch.
+GOD_NODE_TOP_N = 20
+
+# Minimum claim-degree for an entity to be worth flagging; below this the
+# over-collapsed signal is just noise (a normal, sparsely-connected entity).
+GOD_NODE_MIN_DEGREE = 5
+
+# Mechanical hubs — entities central by bookkeeping, not meaning (the
+# analyze.py:god_nodes nuance) — would dominate a raw degree ranking without ever
+# being junk drawers worth splitting. The canonical case is the brain's owner
+# "self" person, who appears in nearly every experience. Exclude them by
+# canonical_name (compared case-insensitively). Empty by default: the maintainer
+# populates this from the live-brain precision review, adding the owner's name(s)
+# and any other bookkeeping node that keeps surfacing. Keep it a small explicit
+# set here — deliberately not a scoring model.
+GOD_NODE_EXCLUDED_NAMES: frozenset[str] = frozenset()
+
+# Degree = count of non-retracted claims incident on the entity, following
+# merged_into on BOTH endpoints so a soft-merge survivor accumulates its losers'
+# degree. UNION (not UNION ALL) collapses the two endpoint rows of a claim whose
+# subject and object resolve to the same survivor, so such a claim counts once,
+# not twice. object_entity_id is nullable (object_literal claims), so the object
+# leg filters it out. The exclusion list is compared against the survivor's
+# lowered canonical_name; an empty list excludes nothing.
+_SPLIT_CANDIDATES_SQL = """
+    with endpoints as (
+            select c.id as claim_id, coalesce(se.merged_into, se.id) as entity_id
+              from brain.claims c
+              join brain.entities se on se.id = c.subject_id
+             where c.polarity <> 'retracted'
+        union
+            select c.id as claim_id, coalesce(oe.merged_into, oe.id) as entity_id
+              from brain.claims c
+              join brain.entities oe on oe.id = c.object_entity_id
+             where c.polarity <> 'retracted'
+               and c.object_entity_id is not null
+    )
+    select ep.entity_id::text     as entity_id,
+           ent.canonical_name     as canonical_name,
+           ent.kind::text         as kind,
+           count(*)::int          as degree
+      from endpoints ep
+      join brain.entities ent on ent.id = ep.entity_id
+     where lower(ent.canonical_name) <> all(%s::text[])
+     group by ep.entity_id, ent.canonical_name, ent.kind
+    having count(*) >= %s
+     order by degree desc, entity_id
+     limit %s
+"""
+
+
+def _load_split_candidates(cursor) -> list[dict]:
+    # ponytail: two index-only scans over the partial claims indexes unioned per
+    # claim — fine at the single-user scale this queue serves, same rationale as
+    # _mention_counts; revisit if the graph ever grows large.
+    excluded = [name.lower() for name in GOD_NODE_EXCLUDED_NAMES]
+    cursor.execute(
+        _SPLIT_CANDIDATES_SQL, [excluded, GOD_NODE_MIN_DEGREE, GOD_NODE_TOP_N]
+    )
+    return dictfetchall(cursor)
+
+
 def _load_low_confidence_claims(cursor) -> list[dict]:
     cursor.execute(
         """
@@ -221,15 +296,18 @@ _REVIEW_LOADERS = (
     ("contradictions", _load_contradictions),
     ("disambiguations", _load_disambiguations),
     ("proposed_corrections", _load_proposed_corrections),
+    ("split_candidates", _load_split_candidates),
 )
 
 
 def review_queue(kind: str = "all") -> dict:
-    """Return items awaiting human review across five surfaces.
+    """Return items awaiting human review across six surfaces.
 
-    kind scopes to one surface; default 'all' returns every queue. Read-only.
-    merge_candidates_deferred counts the pending pairs hidden by the low-impact
-    gate (LOW_IMPACT_MERGE_SQL) so the truncation is visible, not silent.
+    kind scopes to one surface; default 'all' returns every queue. Read-only —
+    including the split_candidates god-node pass (#15), which computes entity
+    degree at read time and writes nothing. merge_candidates_deferred counts the
+    pending pairs hidden by the low-impact gate (LOW_IMPACT_MERGE_SQL) so the
+    truncation is visible, not silent.
     """
     result: dict = {key: [] for key, _ in _REVIEW_LOADERS}
     result["merge_candidates_deferred"] = 0
