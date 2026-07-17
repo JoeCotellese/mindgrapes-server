@@ -12,6 +12,7 @@ import uuid
 import pytest
 from django.db import connection
 
+from openbrain.brain.services import reviews
 from openbrain.brain.services.mcp_reads import pending_reviews
 from openbrain.brain.services.reviews import (
     attach_entity_names,
@@ -505,6 +506,144 @@ def test_merge_candidate_evidence_caps_two_per_side():
 
 def test_merge_candidate_evidence_missing_candidate_returns_none():
     assert merge_candidate_evidence("itest", _new_id()) is None
+
+
+# --- split_candidates god-node detection (#15) --------------------------------
+
+
+def _merge_into(loser_id, winner_id):
+    with connection.cursor() as cur:
+        cur.execute(
+            "update brain.entities set merged_into = %s::uuid where id = %s::uuid",
+            [winner_id, loser_id],
+        )
+
+
+def _split_candidate_ids(kind="split_candidates"):
+    return {r["entity_id"] for r in review_queue(kind)["split_candidates"]}
+
+
+def _split_candidate(entity_id):
+    for r in review_queue("split_candidates")["split_candidates"]:
+        if r["entity_id"] == entity_id:
+            return r
+    return None
+
+
+def test_review_queue_flags_crowded_entity_not_sparse():
+    # One entity wired to many claims; several wired to few. The crowded one is a
+    # split candidate; the sparse ones stay below the degree floor.
+    crowded = _seed_entity(kind="concept", canonical_name="crowded hub")
+    for _ in range(reviews.GOD_NODE_MIN_DEGREE + 3):
+        _seed_claim(crowded)  # null-object claim: counts only the subject endpoint
+    sparse = [_seed_entity(kind="concept") for _ in range(3)]
+    for s in sparse:
+        _seed_claim(s)
+
+    flagged = _split_candidate_ids()
+    assert crowded in flagged
+    assert flagged.isdisjoint(sparse)
+    row = _split_candidate(crowded)
+    assert row["degree"] == reviews.GOD_NODE_MIN_DEGREE + 3
+    assert row["kind"] == "concept"
+    assert row["canonical_name"] == "crowded hub"
+
+
+def test_review_queue_split_candidate_follows_merged_into():
+    # A soft-merge survivor accumulates its loser's degree; neither half alone
+    # clears the floor, so only the followed merged_into edge surfaces it.
+    survivor = _seed_entity(kind="concept", canonical_name="survivor")
+    loser = _seed_entity(kind="concept", canonical_name="loser")
+    half = reviews.GOD_NODE_MIN_DEGREE - 2
+    for _ in range(half):
+        _seed_claim(survivor)
+    for _ in range(half):
+        _seed_claim(loser)
+    _merge_into(loser, survivor)
+
+    flagged = _split_candidate_ids()
+    assert survivor in flagged
+    assert loser not in flagged  # the loser resolves to the survivor
+    assert _split_candidate(survivor)["degree"] == 2 * half
+
+
+def test_review_queue_split_candidate_no_double_count_self_edge():
+    # A claim whose subject and object resolve to the same survivor counts once,
+    # not twice, even across a merged_into edge.
+    survivor = _seed_entity(kind="concept", canonical_name="self hub")
+    loser = _seed_entity(kind="concept", canonical_name="self hub loser")
+    _merge_into(loser, survivor)
+    # subject=survivor, object=loser -> both coalesce to survivor: 1, not 2.
+    for _ in range(reviews.GOD_NODE_MIN_DEGREE):
+        _seed_claim(survivor, object_entity_id=loser)
+
+    assert _split_candidate(survivor)["degree"] == reviews.GOD_NODE_MIN_DEGREE
+
+
+def test_review_queue_split_candidate_excludes_retracted():
+    ent = _seed_entity(kind="concept", canonical_name="mixed polarity hub")
+    keep = reviews.GOD_NODE_MIN_DEGREE + 1
+    for _ in range(keep):
+        _seed_claim(ent)
+    for _ in range(4):
+        _seed_claim(ent, polarity="retracted")
+
+    row = _split_candidate(ent)
+    assert row is not None
+    assert row["degree"] == keep  # retracted claims never count toward degree
+
+
+def test_review_queue_excludes_mechanical_hub(monkeypatch):
+    # A high-degree entity named as a mechanical hub (the tuning point) is not a
+    # junk drawer to split, so it is suppressed while a genuine hub still surfaces.
+    hub = _seed_entity(kind="person", canonical_name="Owner Self")
+    genuine = _seed_entity(kind="concept", canonical_name="genuine hub")
+    for _ in range(reviews.GOD_NODE_MIN_DEGREE + 3):
+        _seed_claim(hub)
+        _seed_claim(genuine)
+    monkeypatch.setattr(reviews, "GOD_NODE_EXCLUDED_NAMES", frozenset({"owner self"}))
+
+    flagged = _split_candidate_ids()
+    assert hub not in flagged
+    assert genuine in flagged
+
+
+def test_review_queue_split_candidates_is_read_only():
+    # The god-node pass computes at read time and writes nothing.
+    crowded = _seed_entity(kind="concept", canonical_name="readonly hub")
+    for _ in range(reviews.GOD_NODE_MIN_DEGREE + 2):
+        _seed_claim(crowded)
+
+    tables = (
+        "brain.entities",
+        "brain.claims",
+        "brain.correction_events",
+        "brain.merge_candidates",
+        "brain.disambiguations",
+        "brain.proposed_corrections",
+    )
+    before = {t: _scalar(f"select count(*) from {t}", []) for t in tables}
+    review_queue("split_candidates")
+    review_queue("all")
+    after = {t: _scalar(f"select count(*) from {t}", []) for t in tables}
+    assert before == after
+
+
+def test_review_queue_scoped_split_candidates_skips_other_surfaces():
+    crowded = _seed_entity(kind="concept", canonical_name="scoped hub")
+    for _ in range(reviews.GOD_NODE_MIN_DEGREE + 1):
+        _seed_claim(crowded)
+    q = review_queue("split_candidates")
+    assert crowded in {r["entity_id"] for r in q["split_candidates"]}
+    assert q["merge_candidates"] == []
+    assert q["low_confidence_claims"] == []
+    assert q["contradictions"] == []
+
+
+def test_review_queue_all_includes_split_candidates_lane():
+    q = review_queue("all")
+    assert "split_candidates" in q
+    assert isinstance(q["split_candidates"], list)
 
 
 # --- request / resolve_disambiguation -----------------------------------------

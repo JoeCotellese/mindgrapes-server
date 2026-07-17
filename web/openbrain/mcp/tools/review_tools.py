@@ -29,6 +29,7 @@ def register_review_tools(mcp) -> None:
             "contradictions",
             "disambiguations",
             "proposed_corrections",
+            "split_candidates",
         ] = "all",
     ) -> dict:
         return serialize(reviews.review_queue(kind))

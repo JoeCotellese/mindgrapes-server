@@ -147,6 +147,39 @@ def test_review_queue_result_advertises_deferred_count():
     )
 
 
+def test_review_queue_result_carries_split_candidates_lane():
+    from openbrain.mcp.schemas import ReviewQueueResult
+
+    props = ReviewQueueResult.model_json_schema()["properties"]
+    assert "split_candidates" in props
+    # Additive: an old-shaped payload omitting the lane still validates, defaulting
+    # to an empty list so pre-#15 clients are unaffected.
+    r = ReviewQueueResult(
+        merge_candidates=[],
+        low_confidence_claims=[],
+        contradictions=[],
+        disambiguations=[],
+        proposed_corrections=[],
+    )
+    assert r.split_candidates == []
+    r2 = ReviewQueueResult(
+        merge_candidates=[],
+        low_confidence_claims=[],
+        contradictions=[],
+        disambiguations=[],
+        proposed_corrections=[],
+        split_candidates=[
+            {
+                "entity_id": "e",
+                "canonical_name": "junk drawer",
+                "kind": "concept",
+                "degree": 42,
+            }
+        ],
+    )
+    assert r2.split_candidates[0].degree == 42
+
+
 def test_review_queue_result_carries_jsonb_payloads():
     from openbrain.mcp.schemas import ReviewQueueResult
 

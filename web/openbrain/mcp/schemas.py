@@ -411,6 +411,13 @@ class ProposedCorrectionItem(BaseModel):
     created_at: str
 
 
+class SplitCandidateItem(BaseModel):
+    entity_id: str
+    canonical_name: str
+    kind: str
+    degree: int
+
+
 class ReviewQueueResult(BaseModel):
     merge_candidates: list[MergeCandidateItem]
     # Pending pairs hidden by the low-impact gate (mindgrapes-server#18);
@@ -420,6 +427,9 @@ class ReviewQueueResult(BaseModel):
     contradictions: list[ContradictionItem]
     disambiguations: list[DisambiguationItem]
     proposed_corrections: list[ProposedCorrectionItem]
+    # Over-connected "god node" entities surfaced by the read-time degree pass
+    # (mindgrapes-server#15). Defaults to [] so pre-#15 clients are unaffected.
+    split_candidates: list[SplitCandidateItem] = []
 
 
 class ProposeCorrectionResult(BaseModel):
