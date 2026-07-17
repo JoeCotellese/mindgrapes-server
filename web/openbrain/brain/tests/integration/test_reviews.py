@@ -167,6 +167,53 @@ def test_review_queue_scoped_skips_other_surfaces():
     assert q["contradictions"] == []
 
 
+# --- merge-candidate impact gate (mindgrapes-server#18) ------------------------
+
+
+def _seed_concept(mentions=0):
+    eid = _seed_entity(kind="concept")
+    for i in range(mentions):
+        _seed_mention(_seed_experience(f"ctx-{eid[:8]}-{i}"), eid, "tag", "topics")
+    return eid
+
+
+def test_review_queue_defers_zero_impact_concept_pair():
+    before = review_queue("merge_candidates")
+    mc = _seed_merge_candidate(_seed_concept(mentions=1), _seed_concept(mentions=1))
+    q = review_queue("merge_candidates")
+    assert mc not in {r["id"] for r in q["merge_candidates"]}
+    assert q["merge_candidates_deferred"] == before["merge_candidates_deferred"] + 1
+
+
+def test_review_queue_deferred_pair_resurfaces_with_claim():
+    a = _seed_concept(mentions=1)
+    b = _seed_concept(mentions=1)
+    mc = _seed_merge_candidate(a, b)
+    _seed_claim(a)
+    q = review_queue("merge_candidates")
+    assert mc in {r["id"] for r in q["merge_candidates"]}
+
+
+def test_review_queue_concept_pair_with_two_mentions_visible():
+    mc = _seed_merge_candidate(_seed_concept(mentions=2), _seed_concept(mentions=1))
+    q = review_queue("merge_candidates")
+    assert mc in {r["id"] for r in q["merge_candidates"]}
+
+
+def test_review_queue_person_pair_not_deferred():
+    mc = _seed_merge_candidate(_seed_entity(), _seed_entity())
+    q = review_queue("merge_candidates")
+    assert mc in {r["id"] for r in q["merge_candidates"]}
+
+
+def test_pending_reviews_count_excludes_deferred():
+    before = pending_reviews()["merge_candidates"]
+    _seed_merge_candidate(_seed_concept(mentions=1), _seed_concept(mentions=1))
+    assert pending_reviews()["merge_candidates"] == before
+    _seed_merge_candidate(_seed_entity(), _seed_entity())
+    assert pending_reviews()["merge_candidates"] == before + 1
+
+
 # --- propose / resolve_correction ---------------------------------------------
 
 
@@ -288,14 +335,18 @@ def test_resolve_merge_candidate_confirm_merges_into_chosen_winner():
     assert res["winner_id"] == winner
     # The loser now points at the winner; the candidate is no longer pending.
     assert (
-        _scalar("select merged_into::text from brain.entities where id=%s::uuid", [loser])
+        _scalar(
+            "select merged_into::text from brain.entities where id=%s::uuid", [loser]
+        )
         == winner
     )
     assert (
         _scalar("select status from brain.merge_candidates where id=%s::uuid", [mc])
         == "merged"
     )
-    assert mc not in {r["id"] for r in review_queue("merge_candidates")["merge_candidates"]}
+    assert mc not in {
+        r["id"] for r in review_queue("merge_candidates")["merge_candidates"]
+    }
     assert pending_reviews()["merge_candidates"] == before - 1
 
 
@@ -309,8 +360,12 @@ def test_resolve_merge_candidate_reject_keeps_entities_separate():
 
     assert res["decision"] == "reject"
     # Neither entity was merged; the candidate is stamped kept_separate.
-    assert _scalar("select merged_into from brain.entities where id=%s::uuid", [a]) is None
-    assert _scalar("select merged_into from brain.entities where id=%s::uuid", [b]) is None
+    assert (
+        _scalar("select merged_into from brain.entities where id=%s::uuid", [a]) is None
+    )
+    assert (
+        _scalar("select merged_into from brain.entities where id=%s::uuid", [b]) is None
+    )
     assert (
         _scalar("select status from brain.merge_candidates where id=%s::uuid", [mc])
         == "kept_separate"
@@ -345,7 +400,11 @@ def test_attach_entity_names_enriches_merge_candidates():
     _seed_merge_candidate(a, b)
     rows = review_queue("merge_candidates")["merge_candidates"]
     enriched = attach_entity_names(rows, "merge_candidates")
-    seeded = next(r for r in enriched if {r["entity_a_name"], r["entity_b_name"]} == {"Acme", "Acme Inc"})
+    seeded = next(
+        r
+        for r in enriched
+        if {r["entity_a_name"], r["entity_b_name"]} == {"Acme", "Acme Inc"}
+    )
     assert seeded["entity_a_kind"] == "org"
     assert seeded["entity_b_kind"] == "org"
 

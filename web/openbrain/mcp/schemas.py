@@ -389,6 +389,9 @@ class ProposedCorrectionItem(BaseModel):
 
 class ReviewQueueResult(BaseModel):
     merge_candidates: list[MergeCandidateItem]
+    # Pending pairs hidden by the low-impact gate (mindgrapes-server#18);
+    # additive so the shipped five-list shape is unchanged.
+    merge_candidates_deferred: int = 0
     low_confidence_claims: list[LowConfidenceClaimItem]
     contradictions: list[ContradictionItem]
     disambiguations: list[DisambiguationItem]

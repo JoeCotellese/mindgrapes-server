@@ -213,7 +213,8 @@ def review_inbox(request):
     active = request.GET.get("surface")
     if active not in _REVIEW_SURFACE_KEYS:
         active = _first_nonempty_surface(counts)
-    rows = attach_entity_names(review_queue(active)[active], active)
+    queue = review_queue(active)
+    rows = attach_entity_names(queue[active], active)
     id_field = _ROW_ID_FIELD[active]
     for row in rows:
         row["row_id"] = row.get(id_field)
@@ -226,6 +227,7 @@ def review_inbox(request):
             "rows": rows,
             "counts": counts,
             "total": counts["total"],
+            "deferred": queue.get("merge_candidates_deferred", 0),
         },
     )
 

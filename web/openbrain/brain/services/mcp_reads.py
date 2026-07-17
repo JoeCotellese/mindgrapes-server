@@ -11,6 +11,7 @@ from openbrain.brain.db import (
 )
 from openbrain.brain.embeddings import embed_query
 from openbrain.brain.services.reads import get_summary
+from openbrain.brain.services.reviews import LOW_IMPACT_MERGE_SQL
 
 # ---------------------------------------------------------------------------
 # hybrid_search
@@ -341,10 +342,15 @@ def recent_entities(window_days: int = 30) -> dict:
     return {"window_days": window_days, "entities": rows}
 
 
-_PENDING_REVIEWS_SQL = """
+# The merge_candidates count applies the same low-impact gate as the
+# review_queue loader so the badge always matches the visible list.
+_PENDING_REVIEWS_SQL = f"""
     select
-      (select count(*) from brain.merge_candidates
-        where status = 'pending')::int as merge_candidates,
+      (select count(*) from brain.merge_candidates mc
+         join brain.entities ea on ea.id = mc.entity_a
+         join brain.entities eb on eb.id = mc.entity_b
+        where mc.status = 'pending'
+          and not ({LOW_IMPACT_MERGE_SQL}))::int as merge_candidates,
       (select count(*) from brain.claims c
          join brain.claim_sources cs on cs.claim_id = c.id
         where c.polarity <> 'retracted'
