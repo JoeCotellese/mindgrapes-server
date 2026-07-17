@@ -75,6 +75,10 @@ FIXTURE = [
     # -- trap: short-token collisions --
     ("person", "Ad", [], "person", "Ada", [], False),
     ("person", "Robert", [], "person", "Roberta", [], False),
+    # -- trap: anonymized/numbered people differ only in a digit token; JW reads
+    #    that as spelling variance but it is a hard distinction (#29) --
+    ("person", "Engineer 1", [], "person", "Engineer 2", [], False),
+    ("person", "Eng 1", [], "person", "Eng 2", [], False),
     # -- trap: initialism vs the expansion it abbreviates --
     ("person", "AL", [], "person", "Ada Lovelace", [], False),
     ("org", "IBM", [], "org", "International Business Machines", [], False),
@@ -84,6 +88,9 @@ FIXTURE = [
     # -- trap: distinct concepts one token apart --
     ("concept", "Q3 roadmap", [], "concept", "Q4 roadmap", [], False),
     ("concept", "Documentation Review", [], "concept", "documentation", [], False),
+    # -- trap: a path and a phrase that fold to the same words are not the same
+    #    thing ('~/obsidian-vault' is a directory, 'Obsidian vault' a concept, #29) --
+    ("concept", "Obsidian vault", [], "concept", "~/obsidian-vault", [], False),
 ]
 
 
@@ -131,6 +138,30 @@ def test_identical_full_name_persons_stay_gated():
     assert match_score(
         "person", "Michael Jordan", [], "person", "Michael Jordan", []
     ) < AUTO_MERGE_THRESHOLD
+
+
+def test_punctuation_shape_mismatch_queues_instead_of_merging():
+    """Non-person names that match only after punctuation-folding are a review
+    call, not an identity (#29): the score lands in the queue band."""
+    score = match_score("concept", "Obsidian vault", [], "concept", "~/obsidian-vault", [])
+    assert DISAMBIGUATE_THRESHOLD < score < AUTO_MERGE_THRESHOLD
+    # Case/whitespace variants and alias-backed identity still auto-merge.
+    assert match_score("org", "NEXTGRES", [], "org", "Nextgres", []) == 1.0
+    assert match_score("org", "Postgres", [], "org", "PostgreSQL", ["Postgres"]) == 1.0
+
+
+def test_differing_numeric_tokens_stay_gated():
+    """'Engineer 1'/'Engineer 2' are different people, not a spelling variant (#29)."""
+    assert match_score("person", "Engineer 1", [], "person", "Engineer 2", []) < (
+        AUTO_MERGE_THRESHOLD
+    )
+    assert match_score("person", "Eng 1", [], "person", "Eng 2", []) < (
+        AUTO_MERGE_THRESHOLD
+    )
+    # Same numeric token on both sides is no distinction — still a variant match.
+    assert match_score("person", "Engineer 1", [], "person", "Enginer 1", []) >= (
+        AUTO_MERGE_THRESHOLD
+    )
 
 
 def test_bare_name_containment_scores_review_band_not_auto_merge():
