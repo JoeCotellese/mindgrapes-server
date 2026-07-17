@@ -580,6 +580,29 @@ def test_review_queue_split_candidate_no_double_count_self_edge():
     assert _split_candidate(survivor)["degree"] == reviews.GOD_NODE_MIN_DEGREE
 
 
+def test_review_queue_split_candidate_follows_object_leg_merged_into():
+    # The loser appears ONLY as claim objects (distinct subjects), so its degree
+    # reaches the survivor solely through the object endpoint's merged_into
+    # coalesce. Neither the survivor's own subject-leg claims nor the loser's
+    # object-leg claims clear the floor alone, so only the followed object edge
+    # surfaces the survivor. Discriminates the object-leg coalesce the same way
+    # follows_merged_into discriminates the subject leg.
+    survivor = _seed_entity(kind="concept", canonical_name="object-leg survivor")
+    loser = _seed_entity(kind="concept", canonical_name="object-leg loser")
+    half = reviews.GOD_NODE_MIN_DEGREE - 2
+    for _ in range(half):
+        _seed_claim(survivor)  # survivor's own subject-leg claims
+    for _ in range(half):
+        # fresh distinct subject each time; loser only ever the object endpoint
+        _seed_claim(_seed_entity(kind="concept"), object_entity_id=loser)
+    _merge_into(loser, survivor)
+
+    flagged = _split_candidate_ids()
+    assert survivor in flagged
+    assert loser not in flagged  # the loser resolves to the survivor
+    assert _split_candidate(survivor)["degree"] == 2 * half
+
+
 def test_review_queue_split_candidate_excludes_retracted():
     ent = _seed_entity(kind="concept", canonical_name="mixed polarity hub")
     keep = reviews.GOD_NODE_MIN_DEGREE + 1
