@@ -40,5 +40,6 @@ insert into brain.schema_migrations (id, name, applied_by) values
   ('13', 'viewer-filter',     'bootstrap'),
   ('14', 'schema-migrations', 'bootstrap'),
   ('15', 'confidence-traversal', 'bootstrap'),
-  ('16', 'alias-scoring',     'bootstrap')
+  ('16', 'alias-scoring',     'bootstrap'),
+  ('17', 'phon-tiebreak',     'bootstrap')
 on conflict (id) do nothing;

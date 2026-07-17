@@ -28,6 +28,9 @@ from openbrain.brain.services.entities import (
     split_entity,
     unmerge_entity,
 )
+from openbrain.brain.services.entity_resolver import (
+    resolve_or_create_entity,
+)
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("brain_write_txn")]
 
@@ -479,3 +482,116 @@ def test_claim_writer_still_creates_entity_for_a_genuinely_new_name():
         )
     assert created != ent
     assert acc["entities_created_for_objects"] == 1
+
+
+# --- #17: phon is a tiebreak, not a channel that can outrank a trgm match ------
+#
+# brain.resolve_entity fuses trgm + phon + vec via RRF. A trgm rank-1 hit is worth
+# 1/(60+1) ≈ 0.0164; the phon channel's additive bonus was 0.05 — ~3x the biggest a
+# trgm rank can contribute — so a phonetic-only competitor always outranked a *perfect*
+# name/alias match, and both top_k=1 callers bound to the wrong entity (#17). Fix drops
+# the phon bonus to 0.0001 (below one RRF step, 1/61-1/62 ≈ 0.000264, so it only breaks
+# genuine ties) and makes the phon channel alias-aware like #171 did for trgm.
+#
+# dmetaphone('Ada') = dmetaphone('Ad') = 'AT'; dmetaphone('Ada Lovelace') = 'ATLF'.
+# So the decoy 'Ad' is a phon-only competitor and 'Ada Lovelace' phon-matches solely
+# through its alias 'Ada' — exercising both halves of the fix at once. Verified against
+# the dev brain: no live person entity collides on dmetaphone 'AT' or trgm-matches 'Ada'.
+
+
+def _resolve_full(name, kind="person", top_k=5):
+    """brain.resolve_entity with a NULL context embedding so the vec channel drops out —
+    the shared dev brain has embedded entities that would otherwise crowd the fused top-k.
+    Isolates the trgm + phon channels this fix touches, same tactic as the #171 helpers."""
+    with connection.cursor() as cur:
+        cur.execute(
+            "select entity_id::text as entity_id, trgm_score, phon_match, "
+            "vec_score, fused_score "
+            "from brain.resolve_entity(%s, null::vector, %s::brain.entity_kind, %s)",
+            [name, kind, top_k],
+        )
+        rows = dictfetchall(cur)
+    for r in rows:
+        r["trgm_score"] = float(r["trgm_score"])
+        r["phon_match"] = bool(r["phon_match"])
+        r["fused_score"] = float(r["fused_score"])
+    return rows
+
+
+def _seed_ada_and_decoy():
+    ada = _seed_entity(kind="person", canonical_name="Ada Lovelace", aliases=["Ada"])
+    decoy = _seed_entity(kind="person", canonical_name="Ad")
+    return ada, decoy
+
+
+def test_resolve_entity_perfect_alias_outranks_phonetic_decoy():
+    """With the phon-only decoy 'Ad' present, resolving 'Ada' must return the exact
+    alias holder 'Ada Lovelace' at rank 1. The 0.05 phon bonus put 'Ad' at rank 1 (#17)."""
+    ada, decoy = _seed_ada_and_decoy()
+    order = [r["entity_id"] for r in _resolve_full("Ada")]
+    assert ada in order and decoy in order
+    assert order.index(ada) < order.index(decoy)
+    assert order[0] == ada
+
+
+def test_claim_writer_binds_exact_alias_over_phonetic_decoy():
+    """The claim_writer top_k=1 path gated on trgm >= 0.85. It got the phon-ranked
+    'Ad' at trgm 0.4, failed the gate, and minted the duplicate #171 exists to prevent."""
+    ada, _ = _seed_ada_and_decoy()
+    acc = new_accumulator()
+    with connection.cursor() as cur:
+        bound = _resolve_or_create_entity(cur, "Ada", "person", None, acc)
+    assert bound == ada
+    assert acc["entities_created_for_objects"] == 0
+
+
+def test_entity_resolver_matches_alias_and_queues_no_candidate_against_decoy():
+    """entity_resolver's top_k=1 path got 'Ad' at trgm 0.4, created a new entity, and could
+    queue a merge_candidate against the wrong existing one. It must instead match 'Ada
+    Lovelace' and leave the decoy out of the review queue entirely."""
+    ada, decoy = _seed_ada_and_decoy()
+    exp = _seed_experience()
+    with connection.cursor() as cur:
+        outcome = resolve_or_create_entity(
+            cur,
+            exp,
+            None,
+            surface="Ada",
+            field="people",
+            kind="person",
+        )
+    assert outcome["action"] == "matched"
+    assert outcome["entity_id"] == ada
+    decoy_candidates = _scalar(
+        "select count(*) from brain.merge_candidates "
+        "where entity_a = %s::uuid or entity_b = %s::uuid",
+        [decoy, decoy],
+    )
+    assert decoy_candidates == 0
+
+
+def test_resolve_entity_alias_only_phonetic_match_sets_phon_match():
+    """Option 4: the phon channel is alias-aware. 'Ada Lovelace' (dmetaphone 'ATLF')
+    phon-matches 'Ada' ('AT') only through its alias, so phon_match proves the alias
+    branch fired — canonical-only phon left it false (#17)."""
+    ada, _ = _seed_ada_and_decoy()
+    by_id = {r["entity_id"]: r for r in _resolve_full("Ada")}
+    assert ada in by_id
+    assert by_id[ada]["phon_match"] is True
+
+
+def test_resolve_entity_phonetic_tie_no_trgm_signal_ranks_deterministically():
+    """Regression against the 2026-06-05 over-collapse: two entities that only phon-match
+    the query (no trgm signal on either side) must tie at the tiebreak-only bonus — equal
+    fused_scores, each below one RRF step (0.000264) — not the old 0.05 that let phon
+    dominate. dmetaphone('Ksyth') = dmetaphone('Qseth') = dmetaphone('Cassoth') = 'KS0';
+    similarity('Qseth','Ksyth') and similarity('Cassoth','Ksyth') are both < 0.3, so
+    neither surfaces in the trgm channel."""
+    a = _seed_entity(kind="person", canonical_name="Qseth")
+    b = _seed_entity(kind="person", canonical_name="Cassoth")
+    by_id = {r["entity_id"]: r for r in _resolve_full("Ksyth", top_k=50)}
+    assert a in by_id and b in by_id
+    assert by_id[a]["phon_match"] is True and by_id[b]["phon_match"] is True
+    assert by_id[a]["trgm_score"] == 0.0 and by_id[b]["trgm_score"] == 0.0
+    assert by_id[a]["fused_score"] == by_id[b]["fused_score"]
+    assert by_id[a]["fused_score"] < 0.000264
