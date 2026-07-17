@@ -107,12 +107,12 @@ def merge_entities(
         cursor.execute(
             """
             update brain.entities
-               set aliases = (
+               set aliases = coalesce((
                  select array_agg(distinct a)
                    from unnest(coalesce(aliases, '{}'::text[]) || %s::text[]) a
                   where a is not null
                     and a <> %s
-               )
+               ), '{}'::text[])
              where id = %s::uuid
             returning aliases
             """,
