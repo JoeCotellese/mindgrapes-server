@@ -77,6 +77,7 @@ def recommend_action(trgm_score: float) -> str:
 
 _PERSON = "person"
 _NON_ALNUM = re.compile(r"[^a-z0-9]+")
+_WHITESPACE = re.compile(r"\s+")
 
 # Generational suffixes distinguish separate people who share a full name
 # (father/son). They are never the token that expands a bare given name into a
@@ -87,6 +88,16 @@ _GENERATIONAL_SUFFIXES = frozenset({"jr", "sr", "jnr", "snr", "ii", "iii", "iv",
 def _normalize(name: str) -> str:
     """Lowercase, fold every run of non-alphanumerics to a single space, trim."""
     return _NON_ALNUM.sub(" ", (name or "").lower()).strip()
+
+
+def _light_normalize(name: str) -> str:
+    """Lowercase and collapse whitespace only — punctuation shape is preserved.
+
+    Punctuation carries identity for non-person names: '~/obsidian-vault' is a
+    directory and 'Obsidian vault' a concept, yet both fold to the same words
+    under _normalize (#29). Auto-merge equality must not erase that.
+    """
+    return _WHITESPACE.sub(" ", (name or "").lower()).strip()
 
 
 def _name_forms(canonical: str, aliases) -> list[str]:
@@ -179,6 +190,11 @@ def _is_abbreviation(sub_tokens: list[str], super_tokens: list[str]) -> bool:
     return bool((sup - sub) - _GENERATIONAL_SUFFIXES)
 
 
+def _numeric_tokens(tokens: list[str]) -> set[str]:
+    """Tokens carrying any digit — identity-bearing for numbered person names."""
+    return {t for t in tokens if any(c.isdigit() for c in t)}
+
+
 def _split_suffix(tokens: list[str]) -> tuple[list[str], str | None]:
     """Peel a trailing generational suffix off a name; (core_tokens, suffix)."""
     if len(tokens) > 1 and tokens[-1] in _GENERATIONAL_SUFFIXES:
@@ -216,6 +232,10 @@ def _person_score(forms_a: list[str], forms_b: list[str]) -> float:
                 continue
             if core_a == core_b:
                 continue
+            # Differing numeric tokens are a hard distinction, not spelling
+            # variance: 'Engineer 1'/'Engineer 2' are two people (#29).
+            if _numeric_tokens(core_a) != _numeric_tokens(core_b):
+                continue
             best = max(best, jaro_winkler(" ".join(core_a), " ".join(core_b)))
     return best
 
@@ -243,8 +263,16 @@ def match_score(
         return 0.0
 
     if kind_a != _PERSON:
-        # A concept/org/place/event is its name: only an exact normalized
-        # duplicate is a safe auto-merge.
-        return 1.0 if set(forms_a) & set(forms_b) else 0.0
+        # A concept/org/place/event is its name: auto-merge only on an exact
+        # light-normalized duplicate (case/whitespace variants, alias-backed
+        # identity). A match that appears only after punctuation-folding is a
+        # review call, not an identity (#29) — it scores in the queue band.
+        light_a = {_light_normalize(x) for x in [canonical_a, *(aliases_a or [])]}
+        light_b = {_light_normalize(x) for x in [canonical_b, *(aliases_b or [])]}
+        if (light_a - {""}) & (light_b - {""}):
+            return 1.0
+        if set(forms_a) & set(forms_b):
+            return CONTAINMENT_SCORE
+        return 0.0
 
     return _person_score(forms_a, forms_b)
