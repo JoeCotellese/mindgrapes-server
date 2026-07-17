@@ -19,8 +19,14 @@ is conservative by construction. The rules encode two domain facts:
   * A person is not identified by a bare given name. Two entities that are each
     only "Karen" are ambiguous and must stay human-gated, even at trgm 1.0.
     Person auto-merge therefore requires either two *full* (multi-token) names
-    that are near-identical, or a bare given name that is a strict token-subset
-    of a fuller name (an abbreviation, e.g. "Ada" of "Ada Lovelace").
+    that are a near-identical spelling variant of each other, or a single bare
+    given name that is a strict token-subset of a fuller name (an abbreviation,
+    e.g. "Ada" of "Ada Lovelace"). A full name is not a unique identifier either
+    — distinct people commonly share one — so an *identical* full name is not
+    evidence of same-entity, and neither is a pair that differs by a whole added
+    token: a generational suffix ("John Smith Jr"/"John Smith Sr") or an extra
+    name component ("Mary Watson"/"Mary Jane Watson") is a real distinction and
+    stays human-gated.
   * A concept/org/place/event *is* its name. Only an exact normalized duplicate
     is a confident auto-merge; fuzzy near-names ("Q3 roadmap"/"Q4 roadmap") stay
     queued because a one-token difference there is usually a real distinction.
@@ -44,6 +50,11 @@ CONTAINMENT_SCORE = 0.95
 
 _PERSON = "person"
 _NON_ALNUM = re.compile(r"[^a-z0-9]+")
+
+# Generational suffixes distinguish separate people who share a full name
+# (father/son). They are never the token that expands a bare given name into a
+# confident abbreviation, and a pair that disagrees on one is a real distinction.
+_GENERATIONAL_SUFFIXES = frozenset({"jr", "sr", "jnr", "snr", "ii", "iii", "iv", "v"})
 
 
 def _normalize(name: str) -> str:
@@ -122,16 +133,35 @@ def jaro_winkler(
 
 
 def _is_abbreviation(sub_tokens: list[str], super_tokens: list[str]) -> bool:
-    """True when sub's tokens are a strict subset of a strictly-longer super."""
-    return (
-        len(super_tokens) > len(sub_tokens)
-        and set(sub_tokens) < set(super_tokens)
-    )
+    """True when sub is a single bare given name that a fuller super expands.
+
+    The confident abbreviation is one bare given name ("Ada") standing in for a
+    fuller name ("Ada Lovelace"): sub is exactly one token, a strict subset of a
+    strictly-longer super, and the distinguishing super tokens are a plausible
+    surname — not merely a generational suffix ("Ada"/"Ada Jr"). A multi-token
+    subset ("Mary Watson" of "Mary Jane Watson", "John Smith" of "John Smith Jr")
+    is a different person plus an added component, not an abbreviation.
+    """
+    if len(sub_tokens) != 1:
+        return False
+    if len(super_tokens) <= len(sub_tokens):
+        return False
+    sub, sup = set(sub_tokens), set(super_tokens)
+    if not sub < sup:
+        return False
+    return bool((sup - sub) - _GENERATIONAL_SUFFIXES)
+
+
+def _split_suffix(tokens: list[str]) -> tuple[list[str], str | None]:
+    """Peel a trailing generational suffix off a name; (core_tokens, suffix)."""
+    if len(tokens) > 1 and tokens[-1] in _GENERATIONAL_SUFFIXES:
+        return tokens[:-1], tokens[-1]
+    return tokens, None
 
 
 def _person_score(forms_a: list[str], forms_b: list[str]) -> float:
-    # A bare given name that is a strict token-subset of a fuller name is a
-    # confident abbreviation ("Ada" of "Ada Lovelace").
+    # A single bare given name that is a strict token-subset of a fuller name is
+    # a confident abbreviation ("Ada" of "Ada Lovelace").
     for na in forms_a:
         ta = na.split()
         for nb in forms_b:
@@ -139,17 +169,27 @@ def _person_score(forms_a: list[str], forms_b: list[str]) -> float:
             if _is_abbreviation(ta, tb) or _is_abbreviation(tb, ta):
                 return CONTAINMENT_SCORE
 
-    # Otherwise fuzzy-match, but only between full (multi-token) names. Bare
-    # shared given names ("Karen"/"Karen", "Ad"/"Ada") are inherently ambiguous
-    # and stay human-gated regardless of string similarity.
+    # Otherwise fuzzy-match, but only between full (multi-token) names that agree
+    # on generational suffix and core token-count. Bare shared given names
+    # ("Karen"/"Karen", "Ad"/"Ada") are inherently ambiguous; a differing suffix
+    # ("John Smith Jr"/"John Smith Sr"), an added component ("Mary Watson"/"Mary
+    # Jane Watson"), or an identical full name (distinct people commonly share
+    # one) is a real distinction — all stay human-gated regardless of string
+    # similarity.
     best = 0.0
     for na in forms_a:
-        if len(na.split()) < 2:
+        core_a, suffix_a = _split_suffix(na.split())
+        if len(core_a) < 2:
             continue
         for nb in forms_b:
-            if len(nb.split()) < 2:
+            core_b, suffix_b = _split_suffix(nb.split())
+            if len(core_b) < 2:
                 continue
-            best = max(best, jaro_winkler(na, nb))
+            if suffix_a != suffix_b or len(core_a) != len(core_b):
+                continue
+            if core_a == core_b:
+                continue
+            best = max(best, jaro_winkler(" ".join(core_a), " ".join(core_b)))
     return best
 
 

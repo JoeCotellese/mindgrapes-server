@@ -100,6 +100,41 @@ def test_plan_never_merges_two_distinct_karens():
     assert {frozenset((a, b)) for a, b, _ in plan["queue"]} == {frozenset(("k1", "k2"))}
 
 
+def test_plan_never_merges_generational_suffix_pair():
+    # Father/son sharing a name minus a Jr suffix must not auto-merge.
+    ents = [
+        _e("s", "person", "John Smith"),
+        _e("j", "person", "John Smith Jr"),
+    ]
+    plan = plan_dedup(ents)
+    assert plan["merges"] == []
+    assert {frozenset((a, b)) for a, b, _ in plan["queue"]} == {frozenset(("s", "j"))}
+
+
+def test_plan_never_merges_added_name_component():
+    # An inserted middle name is a real distinction, not an abbreviation.
+    ents = [
+        _e("mw", "person", "Mary Watson"),
+        _e("mjw", "person", "Mary Jane Watson"),
+    ]
+    plan = plan_dedup(ents)
+    assert plan["merges"] == []
+
+
+def test_plan_never_merges_two_identical_full_name_persons():
+    # Two distinct people with an identical full name (e.g. a prior split_entity)
+    # must not be silently re-merged by the batch scanner.
+    ents = [
+        _e("mj1", "person", "Michael Jordan"),
+        _e("mj2", "person", "Michael Jordan"),
+    ]
+    plan = plan_dedup(ents)
+    assert plan["merges"] == []
+    assert {frozenset((a, b)) for a, b, _ in plan["queue"]} == {
+        frozenset(("mj1", "mj2"))
+    }
+
+
 def test_plan_never_merges_across_kinds():
     ents = [
         _e("p", "person", "Ada Lovelace", ["Ada"]),

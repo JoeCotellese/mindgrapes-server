@@ -54,6 +54,16 @@ FIXTURE = [
     # -- trap: two distinct people who share a common given name --
     ("person", "Karen", [], "person", "Karen", [], False),
     ("person", "Karen Smith", [], "person", "Karen Jones", [], False),
+    # -- trap: distinct people who share an *identical* full name (a full name is
+    #    not a unique identifier — there are many Michael Jordans) --
+    ("person", "Michael Jordan", [], "person", "Michael Jordan", [], False),
+    # -- trap: father/son separated only by a generational suffix --
+    ("person", "John Smith", [], "person", "John Smith Jr", [], False),
+    ("person", "Robert Downey", [], "person", "Robert Downey Jr", [], False),
+    ("person", "John Smith Jr", [], "person", "John Smith Sr", [], False),
+    ("person", "Ada", [], "person", "Ada Jr", [], False),
+    # -- trap: an added name component is a real distinction, not an abbreviation --
+    ("person", "Mary Watson", [], "person", "Mary Jane Watson", [], False),
     # -- trap: short-token collisions --
     ("person", "Ad", [], "person", "Ada", [], False),
     ("person", "Robert", [], "person", "Roberta", [], False),
@@ -89,6 +99,37 @@ def test_cross_kind_never_scores():
         ka, _, _, kb, _, _, _ = row
         if ka != kb:
             assert _score(row) == 0.0
+
+
+def test_generational_suffix_pairs_stay_gated():
+    """Father/son and Jr/Sr pairs are distinct people, never an abbreviation."""
+    assert match_score("person", "John Smith", [], "person", "John Smith Jr", []) < (
+        AUTO_MERGE_THRESHOLD
+    )
+    assert match_score(
+        "person", "John Smith Jr", [], "person", "John Smith Sr", []
+    ) < AUTO_MERGE_THRESHOLD
+
+
+def test_added_name_component_stays_gated():
+    """An inserted middle name is a real distinction, not an abbreviation."""
+    assert match_score(
+        "person", "Mary Watson", [], "person", "Mary Jane Watson", []
+    ) < AUTO_MERGE_THRESHOLD
+
+
+def test_identical_full_name_persons_stay_gated():
+    """A full name is not a unique identifier; identical names alone stay gated."""
+    assert match_score(
+        "person", "Michael Jordan", [], "person", "Michael Jordan", []
+    ) < AUTO_MERGE_THRESHOLD
+
+
+def test_same_suffix_spelling_variant_still_merges():
+    """Agreeing on the suffix, a core spelling variant is still a confident match."""
+    assert match_score(
+        "person", "Jon Smith Jr", [], "person", "John Smith Jr", []
+    ) >= AUTO_MERGE_THRESHOLD
 
 
 def test_queue_delta_report():
