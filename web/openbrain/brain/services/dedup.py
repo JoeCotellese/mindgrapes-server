@@ -19,7 +19,8 @@ without Postgres. Blocking is the union of two channels:
     variants ("Katherine"/"Katharine") that share no whole token.
 
 Verification (not blocking) is what makes a merge safe, so blocking is tuned for
-recall; false candidates are harmless — they verify below threshold and queue.
+recall; false candidates are harmless — they verify below the queue floor and
+are dropped, and only pairs with genuine signal queue (bounded per entity).
 """
 
 import hashlib
@@ -29,6 +30,7 @@ from itertools import combinations
 
 from openbrain.brain.services.name_matching import (
     AUTO_MERGE_THRESHOLD,
+    DISAMBIGUATE_THRESHOLD,
     _is_abbreviation,
     _name_forms,
     match_score,
@@ -36,6 +38,16 @@ from openbrain.brain.services.name_matching import (
 
 _PERSON = "person"
 _MIN_TOKEN_LEN = 3
+
+# Queue floor: only pairs with real verification signal reach the review queue.
+# Blocking is recall-first, so most surfaced pairs score 0.0 — unfloored, the
+# first live run queued 155k rows against 5.2k entities (#27). Identical-name
+# person pairs are the one exception (see plan_dedup): they score 0.0 by design
+# yet are exactly the call a human should make.
+QUEUE_THRESHOLD = DISAMBIGUATE_THRESHOLD
+
+# Backstop: one polluted hub entity must not fan out unbounded review rows (#27).
+MAX_QUEUE_PER_ENTITY = 5
 
 # MinHash/LSH geometry: 64 permutations split into 32 bands of 2 rows puts the
 # LSH S-curve knee near jaccard (1/32)**(1/2) ≈ 0.18 — a deliberately low bar so
@@ -146,6 +158,26 @@ def _abbreviation_subset(a: dict, b: dict) -> str | None:
     return None
 
 
+def _identical_person_forms(a: dict, b: dict) -> bool:
+    """True when two person entities share an exact normalized name form."""
+    if a["kind"] != _PERSON or b["kind"] != _PERSON:
+        return False
+    return bool(set(_blocking_forms(a)) & set(_blocking_forms(b)))
+
+
+def _cap_queue(queue: list[tuple[str, str, float]]) -> list[tuple[str, str, float]]:
+    """Keep at most MAX_QUEUE_PER_ENTITY queued pairs per entity, best first."""
+    counts: dict[str, int] = defaultdict(int)
+    kept: list[tuple[str, str, float]] = []
+    for a_id, b_id, score in sorted(queue, key=lambda t: (-t[2], t[0], t[1])):
+        if counts[a_id] >= MAX_QUEUE_PER_ENTITY or counts[b_id] >= MAX_QUEUE_PER_ENTITY:
+            continue
+        counts[a_id] += 1
+        counts[b_id] += 1
+        kept.append((a_id, b_id, score))
+    return kept
+
+
 def _pick_winner(a: dict, b: dict) -> tuple[dict, dict]:
     """(winner, loser) for a fuzzy full-name merge: keep the better-annotated,
     longer, then lexicographically-smaller-id side as the winner. Deterministic."""
@@ -159,10 +191,11 @@ def plan_dedup(entities: list[dict]) -> dict:
 
     Each entity is {id, kind, canonical_name, aliases}. Returns
     {merges: [(loser_id, winner_id, score)], queue: [(a_id, b_id, score)]}
-    with loser/winner already oriented (abbreviation → full name; otherwise the
-    less-annotated side loses). Person abbreviation merges whose subset name is
-    ambiguous — a strict subset of more than one distinct full name in the set —
-    are demoted to the queue rather than guessing which full name owns them.
+    with loser/winner already oriented (the less-annotated side loses). Pairs
+    that fail verification are queued only with genuine signal (>= QUEUE_THRESHOLD,
+    or identical person names) and capped per entity; the rest are dropped as
+    blocking noise (#27). The abbreviation uniqueness guard below is defense in
+    depth: containment no longer reaches the merge bar at all.
     """
     by_id = {e["id"]: e for e in entities}
     merges: list[tuple[str, str, float, str | None]] = []
@@ -187,7 +220,7 @@ def plan_dedup(entities: list[dict]) -> dict:
             else:
                 winner, loser = _pick_winner(a, b)
             merges.append((loser["id"], winner["id"], score, subset_id))
-        else:
+        elif score >= QUEUE_THRESHOLD or _identical_person_forms(a, b):
             queue.append((a_id, b_id, score))
 
     # Uniqueness guard: an abbreviation that fits more than one full name is
@@ -206,4 +239,4 @@ def plan_dedup(entities: list[dict]) -> dict:
         else:
             safe_merges.append((loser_id, winner_id, score))
 
-    return {"merges": safe_merges, "queue": queue}
+    return {"merges": safe_merges, "queue": _cap_queue(queue)}
