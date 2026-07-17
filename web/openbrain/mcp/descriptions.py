@@ -234,13 +234,13 @@ Idempotent: no (each call creates a fresh disambiguation row).
 Reversible: yes — leave the token unresolved or resolve it with the corrective choice.
 Side effects: writes brain.disambiguations."""
 
-RESOLVE_DISAMBIGUATION = """Apply the user's choice to a pending disambiguation token. Pass either the option's index (number), its label (string), or the matching {label, value} object. When the token was opened by capture_thought for a provisional participant bind (#8), this also reconciles the bind: choosing the 'same as' option confirms it (the mention stays on the best-guess entity); choosing the 'different' option repoints the mention onto a fresh entity via split_entity. The result carries a `reconciliation` block on those tokens.
+RESOLVE_DISAMBIGUATION = """Apply the user's choice to a pending disambiguation token. Pass either the option's index (number), its label (string), or the matching {label, value} object. When the token was opened by capture_thought for a provisional participant bind (#8), this also reconciles the bind: choosing the 'same as' option confirms it (the mention stays on the best-guess entity, and the surface is recorded as an alias so the next capture reuses that entity directly instead of re-asking); choosing the 'different' option repoints just that one bound mention onto a fresh entity — co-mentions of the same candidate in the same capture are left untouched. The result carries a `reconciliation` block on those tokens.
 
 Use when: closing the loop after request_disambiguation — or a capture_thought needs_disambiguation block — surfaced options to the user; feed the user's literal choice through, don't reinterpret.
 Don't use when: the original disambiguation has already been resolved (the call will error) or when the user declined to choose (leave the token unresolved so it stays in review_queue).
 On empty result: N/A (this is a write).
 
-Cost: low (plus a split_entity repoint when a provisional bind is rejected).
+Cost: low (plus a single-mention repoint when a provisional bind is rejected).
 Idempotent: no (errors if the token is already resolved).
-Reversible: the token flip is audited by the disambiguations row itself; a reject's repoint is reversible via its own correction_events row (split back). If reconciliation fails after the token is stamped, the token is reopened so the bind resurfaces in review_queue.
-Side effects: writes brain.disambiguations; on a rejected provisional bind also writes brain.mentions/brain.claims/brain.entities + brain.correction_events via split_entity."""
+Reversible: the token flip is audited by the disambiguations row itself; a reject's mention repoint is reversible via its own correction_events row (split back). If reconciliation fails after the token is stamped, the token is reopened so the bind resurfaces in review_queue.
+Side effects: writes brain.disambiguations; a confirmed provisional bind appends one alias to the candidate entity, and a rejected one writes brain.mentions + brain.entities + brain.correction_events via a mention-scoped split."""

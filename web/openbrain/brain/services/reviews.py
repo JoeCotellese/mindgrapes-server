@@ -633,10 +633,11 @@ def resolve_disambiguation(token: str, choice) -> dict:
     trail. For a provisional-binding token (#8) it additionally reconciles the
     best-guess bind AFTER the token is stamped resolved and its transaction
     commits — mirroring resolve_correction, so the reconciling repair runs in its
-    own transaction and never nests inside the token update. Reject repoints the
-    mention via split_entity (which audits); confirm leaves the bind in place. If
-    the reconciliation fails the token is reopened so the bind resurfaces in
-    review_queue for another attempt.
+    own transaction and never nests inside the token update. Reject repoints just
+    the one bound mention via split_mention (which audits); confirm leaves the
+    bind in place and appends the surface as an alias. If the reconciliation fails
+    the token is reopened so the bind resurfaces in review_queue for another
+    attempt.
     """
     with transaction.atomic(), brain_cursor() as cursor:
         cursor.execute(
@@ -702,20 +703,34 @@ def resolve_disambiguation(token: str, choice) -> dict:
 def _reconcile_provisional_binding(context: dict, resolved: dict) -> dict:
     """Apply a resolved provisional-binding choice (#8).
 
-    confirm leaves the best-guess bind in place — the mention already points at
-    the provisional entity, so there is nothing to move. reject repoints the
-    mention onto a fresh entity for the surface via split_entity, undoing the
-    guess with a correction_events audit trail.
+    confirm ratifies the best-guess bind: the mention already points at the
+    provisional entity, so nothing moves — but the human's explicit "yes, same"
+    appends the surface as an alias on that entity, so the NEXT capture of the
+    surface strong-matches and reuses it instead of re-opening a disambiguation.
+    (The capture-time bind deliberately withholds the alias to keep the guess
+    visible until a human ratifies it.) reject unbinds this one guess: it repoints
+    only the (experience, surface, field) mention onto a fresh entity via
+    split_mention, leaving any co-mention of the same candidate in that experience
+    untouched, with a correction_events audit trail.
     """
     action = (resolved.get("value") or {}).get("action")
     provisional_entity_id = context["provisional_entity_id"]
     if action == "confirm":
-        return {"action": "confirmed", "entity_id": provisional_entity_id}
+        alias_appended = entities.append_alias(
+            provisional_entity_id, context["surface"]
+        )
+        return {
+            "action": "confirmed",
+            "entity_id": provisional_entity_id,
+            "alias_appended": alias_appended,
+        }
     if action == "reject":
-        outcome = entities.split_entity(
+        outcome = entities.split_mention(
             provisional_entity_id,
-            [context["experience_id"]],
-            {"canonical_name": context["surface"], "kind": context["entity_kind"]},
+            experience_id=context["experience_id"],
+            surface_form=context["surface"],
+            field=context["field"],
+            into={"canonical_name": context["surface"], "kind": context["entity_kind"]},
             reason="provisional binding rejected via resolve_disambiguation",
             created_by="mcp:resolve_disambiguation:reject",
         )

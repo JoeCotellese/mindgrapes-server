@@ -481,6 +481,178 @@ def split_entity(
     }
 
 
+def _repoint_single_mention(
+    cursor,
+    *,
+    source_id: str,
+    target_id: str,
+    experience_id: str,
+    surface_form: str,
+    field: str,
+    reason: str | None,
+    created_by: str,
+) -> dict:
+    """HARD move of ONE mention onto target_id (caller's txn).
+
+    Where _repoint_entity_references sweeps every mention of the source in an
+    experience, this filters on surface_form + field too, so exactly the one
+    (experience_id, surface_form, field) binding moves and a co-mentioned sibling
+    surface bound to the same source stays put. Insert-then-delete keeps the
+    mentions PK safe when the target already carries the same surface form in the
+    same experience. Claims are deliberately untouched — a mention-scoped unbind
+    (a rejected provisional participant, #8) is about the surface link, not the
+    entity's claims. One correction_events row only when the mention moved.
+    """
+    cursor.execute(
+        """
+        insert into brain.mentions (experience_id, entity_id, surface_form, field, created_at)
+             select experience_id, %s::uuid, surface_form, field, created_at
+               from brain.mentions
+              where entity_id = %s::uuid
+                and experience_id = %s::uuid
+                and surface_form = %s
+                and field = %s
+        on conflict do nothing
+        """,
+        [target_id, source_id, experience_id, surface_form, field],
+    )
+    cursor.execute(
+        """
+        delete from brain.mentions
+         where entity_id = %s::uuid
+           and experience_id = %s::uuid
+           and surface_form = %s
+           and field = %s
+        """,
+        [source_id, experience_id, surface_form, field],
+    )
+    mentions_repointed = cursor.rowcount or 0
+
+    correction_ids: list[str] = []
+    if mentions_repointed > 0:
+        correction_ids.append(
+            record_correction(
+                cursor,
+                target_kind="entity",
+                target_id=source_id,
+                before={
+                    "entity_id": source_id,
+                    "experience_id": experience_id,
+                    "surface_form": surface_form,
+                    "field": field,
+                },
+                after={
+                    "entity_id": target_id,
+                    "mentions_repointed": mentions_repointed,
+                },
+                reason=reason,
+                created_by=created_by,
+            )
+        )
+
+    return {
+        "mentions_repointed": mentions_repointed,
+        "correction_event_ids": correction_ids,
+    }
+
+
+def split_mention(
+    source_entity_id: str,
+    experience_id: str,
+    surface_form: str,
+    field: str,
+    into: dict,
+    *,
+    reason: str | None = None,
+    created_by: str = "mcp:split_mention",
+) -> dict:
+    """Split one over-collapsed mention off an entity by repointing a single binding.
+
+    Mention-scoped sibling of split_entity: split_entity moves EVERY reference of
+    the source in an experience, while this moves exactly the one (experience_id,
+    surface_form, field) mention onto a fresh or existing target and leaves every
+    co-mention of the same source in that experience untouched. That granularity is
+    what a rejected provisional participant bind (#8) needs — the reviewer unbinds
+    one guess, not the whole entity in that capture.
+    """
+    with transaction.atomic(), brain_cursor() as cursor:
+        cursor.execute(
+            "select id::text, kind::text as kind, merged_into::text "
+            "from brain.entities where id = %s::uuid for update",
+            [source_entity_id],
+        )
+        src_rows = dictfetchall(cursor)
+        if not src_rows:
+            raise ValueError(
+                f"split_mention: source_entity_id {source_entity_id} not found"
+            )
+        source = src_rows[0]
+        if source["merged_into"]:
+            raise ValueError(
+                f"split_mention: source_entity_id {source_entity_id} is merged into "
+                f"{source['merged_into']}; unmerge it first"
+            )
+
+        normalized = normalize_split_into(into, source["kind"])
+
+        target_created = False
+        if normalized["mode"] == "existing":
+            cursor.execute(
+                "select id::text, merged_into::text "
+                "from brain.entities where id = %s::uuid for update",
+                [normalized["entity_id"]],
+            )
+            tgt_rows = dictfetchall(cursor)
+            if not tgt_rows:
+                raise ValueError(
+                    f"split_mention: into.entity_id {normalized['entity_id']} not found"
+                )
+            if tgt_rows[0]["merged_into"]:
+                raise ValueError(
+                    f"split_mention: into.entity_id {normalized['entity_id']} is itself "
+                    f"merged into {tgt_rows[0]['merged_into']}"
+                )
+            target_id = normalized["entity_id"]
+        else:
+            cursor.execute(
+                """
+                insert into brain.entities (kind, canonical_name, aliases, metadata)
+                     values (%s::brain.entity_kind, %s, %s::text[], %s::jsonb)
+                  returning id::text
+                """,
+                [
+                    normalized["kind"],
+                    normalized["canonical_name"],
+                    normalized["aliases"],
+                    json.dumps(normalized["metadata"]),
+                ],
+            )
+            target_id = dictfetchall(cursor)[0]["id"]
+            target_created = True
+
+        if target_id == source_entity_id:
+            raise ValueError("split_mention: target and source must differ")
+
+        repoint = _repoint_single_mention(
+            cursor,
+            source_id=source_entity_id,
+            target_id=target_id,
+            experience_id=experience_id,
+            surface_form=surface_form,
+            field=field,
+            reason=reason,
+            created_by=created_by,
+        )
+
+    return {
+        "source_entity_id": source_entity_id,
+        "target_entity_id": target_id,
+        "target_created": target_created,
+        "mentions_repointed": repoint["mentions_repointed"],
+        "correction_event_ids": repoint["correction_event_ids"],
+    }
+
+
 def unmerge_entity(
     entity_id: str,
     *,
@@ -537,6 +709,33 @@ def unmerge_entity(
         "prior_merged_into": e["merged_into"],
         "correction_event_id": correction_id,
     }
+
+
+_APPEND_ALIAS_ON_CURSOR_SQL = """
+    update brain.entities
+       set aliases = case
+         when %s = any(aliases) then aliases
+         else array_append(aliases, %s)
+       end
+     where id = %s::uuid and merged_into is null
+    returning id::text
+"""
+
+
+def append_alias(entity_id: str, alias: str) -> bool:
+    """Idempotently append a surface form to a live entity's aliases.
+
+    Mirrors entity_resolver's strong-match alias append: additive search surface,
+    not an audited state transition, so it writes no correction_event. A merged-
+    away entity is skipped (its winner owns the surface). Returns True when a live
+    row was targeted, whether or not the alias was already present.
+    """
+    alias = (alias or "").strip()
+    if not alias:
+        return False
+    with transaction.atomic(), brain_cursor() as cursor:
+        cursor.execute(_APPEND_ALIAS_ON_CURSOR_SQL, [alias, alias, entity_id])
+        return bool(dictfetchall(cursor))
 
 
 def resolve_entity(

@@ -371,6 +371,161 @@ def test_structured_capture_reject_reconciles_and_repoints_mention():
     )
 
 
+def _token_for(result, surface):
+    for block in result["needs_disambiguation"]:
+        if block["surface"] == surface:
+            return block["token"]
+    raise AssertionError(f"no disambiguation block for surface {surface!r}")
+
+
+@override_settings(BRAIN_EMBED_FN=f"{_MOD}._embed")
+def test_structured_capture_reject_repoints_only_the_provisional_mention():
+    # Two surfaces provisional-bind to the SAME best-guess entity in one capture
+    # (both trgm ≈ 0.57 to the seed). Rejecting one guess must unbind only that
+    # mention and leave the sibling on the best-guess entity — not sweep the whole
+    # entity-in-experience the way an experience-scoped split would.
+    existing = _seed_person("Zorptangle")
+    result = capture(
+        content="ran into both of them",
+        owner=OWNER,
+        account_id="household",
+        participants=[{"name": "Vorptangle"}, {"name": "Worptangle"}],
+    )
+    eid = result["experience_id"]
+    assert all(e["action"] == "provisional" for e in result["extracted_entities"])
+    # Both mentions landed on the best-guess entity.
+    assert (
+        _scalar(
+            "select count(*) from brain.mentions where experience_id=%s::uuid "
+            "and entity_id=%s::uuid",
+            [eid, existing],
+        )
+        == 2
+    )
+
+    res = resolve_disambiguation(_token_for(result, "Vorptangle"), 1)
+    assert res["reconciliation"]["action"] == "repointed"
+    assert res["reconciliation"]["mentions_repointed"] == 1
+    target = res["reconciliation"]["target_entity_id"]
+
+    # The rejected surface moved onto a fresh entity…
+    assert (
+        _scalar(
+            "select count(*) from brain.mentions where experience_id=%s::uuid "
+            "and entity_id=%s::uuid and surface_form=%s",
+            [eid, target, "Vorptangle"],
+        )
+        == 1
+    )
+    # …and the co-mentioned sibling is UNTOUCHED on the best-guess entity.
+    assert (
+        _scalar(
+            "select count(*) from brain.mentions where experience_id=%s::uuid "
+            "and entity_id=%s::uuid",
+            [eid, existing],
+        )
+        == 1
+    )
+    assert (
+        _scalar(
+            "select surface_form from brain.mentions where experience_id=%s::uuid "
+            "and entity_id=%s::uuid",
+            [eid, existing],
+        )
+        == "Worptangle"
+    )
+    # The sibling's token is still pending for its own decision.
+    q = review_queue("disambiguations")
+    assert _token_for(result, "Worptangle") in {
+        r["token"] for r in q["disambiguations"]
+    }
+
+
+@override_settings(BRAIN_EMBED_FN=f"{_MOD}._embed")
+def test_structured_capture_reject_leaves_explicitly_provided_mention():
+    # A provided (non-provisional) participant and a provisional sibling both bind
+    # to the same entity. Rejecting the provisional guess must never drag the
+    # explicitly-provided mention off the entity the caller pinned.
+    existing = _seed_person("Zorptangle")
+    result = capture(
+        content="the two of them",
+        owner=OWNER,
+        account_id="household",
+        participants=[
+            {"name": "Zorptangle", "entity_id": existing},
+            {"name": "Vorptangle"},
+        ],
+    )
+    eid = result["experience_id"]
+    provided = next(
+        e for e in result["extracted_entities"] if e["action"] == "provided"
+    )
+    assert provided["provisional"] is False
+    assert (
+        _scalar(
+            "select count(*) from brain.mentions where experience_id=%s::uuid "
+            "and entity_id=%s::uuid",
+            [eid, existing],
+        )
+        == 2
+    )
+
+    resolve_disambiguation(_token_for(result, "Vorptangle"), 1)
+
+    # The provided mention stays pinned to the entity the caller chose.
+    assert (
+        _scalar(
+            "select count(*) from brain.mentions where experience_id=%s::uuid "
+            "and entity_id=%s::uuid",
+            [eid, existing],
+        )
+        == 1
+    )
+    assert (
+        _scalar(
+            "select surface_form from brain.mentions where experience_id=%s::uuid "
+            "and entity_id=%s::uuid",
+            [eid, existing],
+        )
+        == "Zorptangle"
+    )
+
+
+@override_settings(BRAIN_EMBED_FN=f"{_MOD}._embed")
+def test_structured_capture_confirm_appends_alias_so_next_capture_reuses():
+    # Confirming a provisional bind must teach the resolver: append the surface as
+    # an alias so the NEXT capture of it strong-matches and reuses the entity
+    # instead of re-opening a disambiguation.
+    existing = _seed_person("Zorptangle")
+    first = capture(
+        content="saw them once",
+        owner=OWNER,
+        account_id="household",
+        participants=[{"name": "Vorptangle"}],
+    )
+    token = first["needs_disambiguation"][0]["token"]
+
+    res = resolve_disambiguation(token, 0)
+    assert res["reconciliation"]["action"] == "confirmed"
+    assert res["reconciliation"]["alias_appended"] is True
+    assert "Vorptangle" in _scalar(
+        "select aliases from brain.entities where id=%s::uuid", [existing]
+    )
+
+    # The next capture of that surface now strong-matches — no fresh guess.
+    second = capture(
+        content="saw them again",
+        owner=OWNER,
+        account_id="household",
+        participants=[{"name": "Vorptangle"}],
+    )
+    extracted = second["extracted_entities"][0]
+    assert extracted["action"] == "matched"
+    assert extracted["provisional"] is False
+    assert extracted["entity_id"] == existing
+    assert second["needs_disambiguation"] == []
+
+
 @override_settings(BRAIN_EMBED_FN=f"{_MOD}._embed")
 def test_structured_capture_confident_pair_auto_merges_non_provisionally():
     # #16 interaction: a borderline pair that clears match_score >= 0.92 is
