@@ -12,7 +12,7 @@ Requires the dev stack up (make dev-up); run via make dev-test-integration.
 import uuid
 
 import pytest
-from django.db import IntegrityError, connection
+from django.db import connection
 from django.test import override_settings
 
 from openbrain.brain.db import dictfetchall
@@ -172,16 +172,39 @@ def test_merge_resolves_pending_merge_candidate():
     )
 
 
-def test_merge_identical_name_empty_aliases_surfaces_not_null():
-    # Issue #40 (open): merging two entities that share canonical_name with empty
-    # aliases makes array_agg(distinct ...) return NULL, violating aliases NOT
-    # NULL. Kept so the merge path keeps surfacing the same
-    # sqlstate (23502) — the error shape #120 calls out.
+def test_merge_identical_name_empty_aliases_succeeds():
+    # #2: when both entities share canonical_name and carry no other aliases, the
+    # alias-append filter (a <> winner.canonical_name) strips every candidate row
+    # and array_agg over zero rows returns NULL — which used to trip the aliases
+    # NOT NULL constraint (sqlstate 23502) and block reconciling exact-name
+    # duplicates by hand.
     winner = _seed_entity(canonical_name="PostgreSQL", aliases=[])
     loser = _seed_entity(canonical_name="PostgreSQL", aliases=[])
-    with pytest.raises(IntegrityError) as exc:
-        merge_entities(loser, winner)
-    assert getattr(exc.value.__cause__, "sqlstate", None) == "23502"
+    res = merge_entities(loser, winner)
+    assert res["alias_appended"] is False
+    assert (
+        _scalar("select aliases from brain.entities where id=%s::uuid", [winner]) == []
+    )
+    assert (
+        _scalar(
+            "select merged_into::text from brain.entities where id=%s::uuid", [loser]
+        )
+        == winner
+    )
+
+
+def test_merge_identical_name_keeps_loser_distinct_aliases():
+    # The same-name path must still carry over the aliases that aren't the shared
+    # canonical_name — the coalesce fixes the empty case without swallowing these.
+    winner = _seed_entity(canonical_name="PostgreSQL", aliases=[])
+    loser = _seed_entity(
+        canonical_name="PostgreSQL", aliases=["Postgres", "PostgreSQL"]
+    )
+    res = merge_entities(loser, winner)
+    assert res["alias_appended"] is True
+    assert _scalar(
+        "select aliases from brain.entities where id=%s::uuid", [winner]
+    ) == ["Postgres"]
 
 
 # --- rename_entity ------------------------------------------------------------
