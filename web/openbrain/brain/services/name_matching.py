@@ -18,10 +18,11 @@ is conservative by construction. The rules encode two domain facts:
 
   * A person is not identified by a bare given name. Two entities that are each
     only "Karen" are ambiguous and must stay human-gated, even at trgm 1.0.
-    Person auto-merge therefore requires either two *full* (multi-token) names
-    that are a near-identical spelling variant of each other, or a single bare
-    given name that is a strict token-subset of a fuller name (an abbreviation,
-    e.g. "Ada" of "Ada Lovelace"). A full name is not a unique identifier either
+    Person auto-merge therefore requires two *full* (multi-token) names that are
+    a near-identical spelling variant of each other. A single bare given name
+    that is a strict token-subset of a fuller name (an abbreviation, e.g. "Ada"
+    of "Ada Lovelace") is only a best guess — it scores `CONTAINMENT_SCORE`,
+    below the auto-merge bar (#27). A full name is not a unique identifier either
     — distinct people commonly share one — so an *identical* full name is not
     evidence of same-entity, and neither is a pair that differs by a whole added
     token: a generational suffix ("John Smith Jr"/"John Smith Sr") or an extra
@@ -44,9 +45,12 @@ import re
 AUTO_MERGE_THRESHOLD = 0.92
 
 # A bare given name that is a strict token-subset of a multi-token full name is a
-# confident person abbreviation; score it just above threshold rather than 1.0 so
-# it never outranks an exact full-name match in any downstream ordering.
-CONTAINMENT_SCORE = 0.95
+# *best guess*, not a merge: the bare name may belong to an unseen namesake, and
+# aliases on over-collapsed entities make apparent containment unreliable (the
+# first live run auto-merged 'Richard' into 'Rich Mironov' while Richard Woundy
+# existed, #27). Scored between the disambiguate floor and the auto-merge bar so
+# callers bind provisionally / queue it — never auto-merge.
+CONTAINMENT_SCORE = 0.86
 
 # Recommendation cut-points applied to resolve_entity's top trgm_score (name
 # similarity, 0-1). These are the single source of truth for the capture-then-

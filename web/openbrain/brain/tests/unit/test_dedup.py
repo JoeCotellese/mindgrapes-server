@@ -1,7 +1,13 @@
 # ABOUTME: Unit tests for the pure batch dedup planner (#16): blocking discovery,
 # ABOUTME: verification-gated merge/queue split, and the abbreviation uniqueness guard.
 
-from openbrain.brain.services.dedup import _candidate_pairs, plan_dedup
+from openbrain.brain.services.dedup import (
+    MAX_QUEUE_PER_ENTITY,
+    _candidate_pairs,
+    _cap_queue,
+    plan_dedup,
+)
+from openbrain.brain.services.name_matching import CONTAINMENT_SCORE
 
 
 def _e(eid, kind, name, aliases=None):
@@ -55,13 +61,17 @@ def test_plan_auto_merges_full_name_spelling_variant():
     assert plan["queue"] == []
 
 
-def test_plan_auto_merges_unique_abbreviation_into_full_name():
+def test_plan_queues_bare_name_abbreviation():
+    # A bare given name abbreviating one fuller name is the likely same entity
+    # but not a safe auto-merge (field evidence #27: alias pollution and unseen
+    # namesakes make "unique containment" unreliable) — it queues for review.
     ents = [
         _e("full", "person", "Ada Lovelace"),
         _e("abbr", "person", "Ada"),
     ]
     plan = plan_dedup(ents)
-    assert plan["merges"] == [("abbr", "full", 0.95)]
+    assert plan["merges"] == []
+    assert plan["queue"] == [("abbr", "full", CONTAINMENT_SCORE)]
 
 
 def test_plan_merges_exact_duplicate_concepts():
@@ -75,8 +85,9 @@ def test_plan_merges_exact_duplicate_concepts():
 
 
 def test_plan_queues_ambiguous_abbreviation_rather_than_guessing():
-    # "Chris" is a strict subset of two distinct full names — auto-merging either
-    # is a coin flip, so both go to the queue and nothing auto-merges.
+    # "Chris" fits two distinct full names; both pairs queue and nothing merges.
+    # (Containment no longer auto-merges at all, but both pairs must still clear
+    # the queue floor rather than being dropped as noise.)
     ents = [
         _e("c", "person", "Chris"),
         _e("t", "person", "Chris Taylor"),
@@ -101,14 +112,16 @@ def test_plan_never_merges_two_distinct_karens():
 
 
 def test_plan_never_merges_generational_suffix_pair():
-    # Father/son sharing a name minus a Jr suffix must not auto-merge.
+    # Father/son sharing a name minus a Jr suffix must not auto-merge — and with
+    # no verification signal (score 0.0, names not identical) the pair is
+    # presumptively two people: dropped as noise, not queued (#27).
     ents = [
         _e("s", "person", "John Smith"),
         _e("j", "person", "John Smith Jr"),
     ]
     plan = plan_dedup(ents)
     assert plan["merges"] == []
-    assert {frozenset((a, b)) for a, b, _ in plan["queue"]} == {frozenset(("s", "j"))}
+    assert plan["queue"] == []
 
 
 def test_plan_never_merges_added_name_component():
@@ -143,3 +156,37 @@ def test_plan_never_merges_across_kinds():
     plan = plan_dedup(ents)
     assert plan["merges"] == []
     assert plan["queue"] == []  # cross-kind never even blocks together
+
+
+def test_plan_drops_blocking_noise_below_floor():
+    # Blocking surfaces the shared-token pair, but with no verification signal
+    # it is dropped, not queued — unfloored queueing wrote 155k rows against the
+    # 5.2k-entity live brain (#27).
+    ents = [
+        _e("a", "concept", "Documentation Review"),
+        _e("b", "concept", "documentation"),
+    ]
+    plan = plan_dedup(ents)
+    assert plan["merges"] == []
+    assert plan["queue"] == []
+
+
+def test_plan_still_queues_identical_person_names():
+    # Identical person names score 0.0 (never merge evidence) yet are exactly
+    # the decision a human should see — the floor must not drop them.
+    ents = [
+        _e("k1", "person", "Karen"),
+        _e("k2", "person", "Karen"),
+    ]
+    plan = plan_dedup(ents)
+    assert plan["merges"] == []
+    assert [(a, b) for a, b, _ in plan["queue"]] == [("k1", "k2")]
+
+
+def test_queue_cap_bounds_per_entity_fanout():
+    # One polluted hub must not fan out unbounded review rows; the cap keeps the
+    # highest-scoring pairs deterministically.
+    queue = [("hub", f"e{i}", 0.60 + i / 100) for i in range(8)]
+    capped = _cap_queue(queue)
+    assert len(capped) == MAX_QUEUE_PER_ENTITY
+    assert {b for _, b, _ in capped} == {f"e{i}" for i in range(3, 8)}

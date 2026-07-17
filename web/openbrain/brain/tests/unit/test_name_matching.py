@@ -3,6 +3,7 @@
 
 from openbrain.brain.services.name_matching import (
     AUTO_MERGE_THRESHOLD,
+    CONTAINMENT_SCORE,
     DISAMBIGUATE_THRESHOLD,
     REUSE_THRESHOLD,
     jaro,
@@ -48,12 +49,16 @@ FIXTURE = [
     ("person", "Jon Smith", [], "person", "John Smith", [], True),
     ("person", "Katherine Johnson", [], "person", "Katharine Johnson", [], True),
     ("person", "Acme Robotics Inc", [], "person", "Acme Robotcs Inc", [], True),
-    # -- same: a bare given name that abbreviates a fuller name --
-    ("person", "Ada Lovelace", [], "person", "Ada", [], True),
-    ("person", "Ada", [], "person", "Ada Lovelace", ["Ada"], True),
     # -- same: exact-duplicate concept (the epic's exact-name dup) --
     ("concept", "documentation", [], "concept", "Documentation", [], True),
     ("org", "Northwind", ["the product"], "org", "northwind", [], True),
+    # -- trap: a bare given name abbreviating a fuller name is the *likely* same
+    #    entity but not a safe auto-merge: the bare name may belong to someone
+    #    else entirely, and aliases on over-collapsed entities make "unique
+    #    containment" unreliable in the field ('Richard' -> 'Rich Mironov' while
+    #    Richard Woundy existed, #27). It binds provisionally / queues instead. --
+    ("person", "Ada Lovelace", [], "person", "Ada", [], False),
+    ("person", "Ada", [], "person", "Ada Lovelace", ["Ada"], False),
     # -- trap: two distinct people who share a common given name --
     ("person", "Karen", [], "person", "Karen", [], False),
     ("person", "Karen Smith", [], "person", "Karen Jones", [], False),
@@ -126,6 +131,15 @@ def test_identical_full_name_persons_stay_gated():
     assert match_score(
         "person", "Michael Jordan", [], "person", "Michael Jordan", []
     ) < AUTO_MERGE_THRESHOLD
+
+
+def test_bare_name_containment_scores_review_band_not_auto_merge():
+    """A bare given name abbreviating a fuller name is a best guess, not a merge:
+    it sits above the disambiguate floor (queue-worthy, provisional-bind-worthy)
+    and below the auto-merge bar (#27)."""
+    score = match_score("person", "Ada", [], "person", "Ada Lovelace", [])
+    assert score == CONTAINMENT_SCORE
+    assert DISAMBIGUATE_THRESHOLD < score < AUTO_MERGE_THRESHOLD
 
 
 def test_same_suffix_spelling_variant_still_merges():
