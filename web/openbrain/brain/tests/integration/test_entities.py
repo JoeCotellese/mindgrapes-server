@@ -595,3 +595,151 @@ def test_resolve_entity_phonetic_tie_no_trgm_signal_ranks_deterministically():
     assert by_id[a]["trgm_score"] == 0.0 and by_id[b]["trgm_score"] == 0.0
     assert by_id[a]["fused_score"] == by_id[b]["fused_score"]
     assert by_id[a]["fused_score"] < 0.000264
+
+# --- #16: second-stage verification in the resolver's borderline band ----------
+#
+# The trgm band (0.55-0.85) that used to queue every pair now runs a Jaro-Winkler
+# verification first. A confident match is soft-auto-merged (audited + reversible)
+# instead of queued; a weak one still queues exactly as before. Names are
+# distinctive so they don't collide with the shared dev brain, and embedding=None
+# keeps the vec channel out so trgm alone lands the pair in the band.
+#
+# similarity('John Zorptangle','Jon Zorptangle') ≈ 0.72 (in band, below the 0.85
+# match bar) while Jaro-Winkler ≈ 0.98 (>= AUTO_MERGE_THRESHOLD) — the exact shape
+# the second stage exists to rescue from the queue.
+
+
+def _resolve_new(surface, kind, exp):
+    with connection.cursor() as cur:
+        return resolve_or_create_entity(
+            cur, exp, None, surface=surface, field="people", kind=kind
+        )
+
+
+def test_borderline_confident_verification_auto_merges_and_is_reversible():
+    existing = _seed_entity(kind="person", canonical_name="Jon Zorptangle")
+    exp = _seed_experience()
+
+    outcome = _resolve_new("John Zorptangle", "person", exp)
+
+    assert outcome["action"] == "auto_merged"
+    assert outcome["entity_id"] == existing  # mentions link to the surviving entity
+    assert outcome["verification_score"] >= 0.92
+    new_id = outcome["merged_from_entity_id"]
+
+    # The freshly-created entity is soft-merged into the existing one.
+    assert (
+        _scalar(
+            "select merged_into::text from brain.entities where id=%s::uuid", [new_id]
+        )
+        == existing
+    )
+    # The merge is audited: exactly one correction_events row for the loser.
+    assert (
+        _scalar(
+            "select count(*) from brain.correction_events "
+            "where target_kind='entity' and target_id=%s::uuid",
+            [new_id],
+        )
+        == 1
+    )
+    # The candidate row is recorded and resolved to 'merged' so a reversal reopens it.
+    lo, hi = sorted([existing, new_id])
+    assert (
+        _scalar(
+            "select status from brain.merge_candidates "
+            "where entity_a=%s::uuid and entity_b=%s::uuid",
+            [lo, hi],
+        )
+        == "merged"
+    )
+
+    # Reversibility: unmerge clears the pointer and reopens the candidate.
+    unmerge_entity(new_id)
+    assert (
+        _scalar("select merged_into from brain.entities where id=%s::uuid", [new_id])
+        is None
+    )
+    assert (
+        _scalar(
+            "select status from brain.merge_candidates "
+            "where entity_a=%s::uuid and entity_b=%s::uuid",
+            [lo, hi],
+        )
+        == "pending"
+    )
+
+
+def test_borderline_weak_verification_still_queues():
+    # similarity('Vorptangle','Zorptangle') ≈ 0.57 (in band) but a single-token
+    # person pair verifies at 0.0 — it must queue, not auto-merge, exactly as before.
+    existing = _seed_entity(kind="person", canonical_name="Zorptangle")
+    exp = _seed_experience()
+
+    outcome = _resolve_new("Vorptangle", "person", exp)
+
+    assert outcome["action"] == "borderline"
+    assert outcome["borderline_entity_id"] == existing
+    assert outcome["verification_score"] < 0.92
+    new_id = outcome["entity_id"]
+    assert (
+        _scalar("select merged_into from brain.entities where id=%s::uuid", [new_id])
+        is None
+    )
+    lo, hi = sorted([existing, new_id])
+    assert (
+        _scalar(
+            "select status from brain.merge_candidates "
+            "where entity_a=%s::uuid and entity_b=%s::uuid",
+            [lo, hi],
+        )
+        == "pending"
+    )
+
+
+# --- #16: the batch dedup_entities command's write path ------------------------
+
+
+def test_dedup_command_apply_merges_executes_and_audits():
+    from openbrain.brain.management.commands.dedup_entities import Command
+
+    winner = _seed_entity(kind="person", canonical_name="Jon Zorptangle")
+    loser = _seed_entity(kind="person", canonical_name="John Zorptangle")
+
+    merged = Command()._apply_merges([(loser, winner, 0.98)])
+
+    assert merged == 1
+    assert (
+        _scalar(
+            "select merged_into::text from brain.entities where id=%s::uuid", [loser]
+        )
+        == winner
+    )
+    assert (
+        _scalar(
+            "select count(*) from brain.correction_events "
+            "where target_kind='entity' and target_id=%s::uuid",
+            [loser],
+        )
+        == 1
+    )
+
+
+def test_dedup_command_apply_queue_writes_pending_candidate():
+    from openbrain.brain.management.commands.dedup_entities import Command
+
+    a = _seed_entity(kind="person", canonical_name="Zorptangle")
+    b = _seed_entity(kind="person", canonical_name="Vorptangle")
+    lo, hi = sorted([a, b])
+
+    queued = Command()._apply_queue([(lo, hi, 0.57)])
+
+    assert queued == 1
+    assert (
+        _scalar(
+            "select status from brain.merge_candidates "
+            "where entity_a=%s::uuid and entity_b=%s::uuid",
+            [lo, hi],
+        )
+        == "pending"
+    )

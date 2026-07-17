@@ -59,6 +59,111 @@ _ENTITY_FOR_UPDATE_SQL = """
 """
 
 
+def merge_entities_on_cursor(
+    cursor,
+    loser_id: str,
+    winner_id: str,
+    *,
+    reason: str | None = None,
+    created_by: str = "mcp:merge_entities",
+) -> dict:
+    """Soft-merge loser into winner on the caller's cursor: append aliases, set
+    merged_into, resolve any pending candidate, audit.
+
+    The cursor-level core of the merge path. merge_entities wraps it in its own
+    transaction; the second-stage auto-merge (entity_resolver) calls it inside the
+    capture transaction so the two paths write identical rows + correction_events.
+    Returns {loser_id, winner_id, correction_event_id, alias_appended}.
+    """
+    if loser_id == winner_id:
+        raise ValueError("merge_entities: loser_id and winner_id must differ")
+
+    cursor.execute(_ENTITY_FOR_UPDATE_SQL, [loser_id])
+    loser_rows = dictfetchall(cursor)
+    if not loser_rows:
+        raise ValueError(f"merge_entities: loser_id {loser_id} not found")
+    loser = loser_rows[0]
+    if loser["merged_into"]:
+        raise ValueError(
+            f"merge_entities: loser_id {loser_id} is already merged into "
+            f"{loser['merged_into']}"
+        )
+
+    cursor.execute(_ENTITY_FOR_UPDATE_SQL, [winner_id])
+    winner_rows = dictfetchall(cursor)
+    if not winner_rows:
+        raise ValueError(f"merge_entities: winner_id {winner_id} not found")
+    winner = winner_rows[0]
+    if winner["merged_into"]:
+        raise ValueError(
+            f"merge_entities: winner_id {winner_id} is itself merged into "
+            f"{winner['merged_into']}"
+        )
+    if loser["kind"] != winner["kind"]:
+        raise ValueError(
+            f"merge_entities: kind mismatch (loser={loser['kind']}, "
+            f"winner={winner['kind']})"
+        )
+
+    # Append the loser's canonical_name + every alias onto the winner so a
+    # future search by any historical surface form still resolves.
+    incoming = [loser["canonical_name"], *loser["aliases"]]
+    cursor.execute(
+        """
+        update brain.entities
+           set aliases = coalesce((
+             select array_agg(distinct a)
+               from unnest(coalesce(aliases, '{}'::text[]) || %s::text[]) a
+              where a is not null
+                and a <> %s
+           ), '{}'::text[])
+         where id = %s::uuid
+        returning aliases
+        """,
+        [incoming, winner["canonical_name"], winner["id"]],
+    )
+    new_aliases = dictfetchall(cursor)[0]["aliases"]
+    alias_appended = len(new_aliases or []) > len(winner["aliases"])
+
+    cursor.execute(
+        "update brain.entities set merged_into = %s::uuid where id = %s::uuid",
+        [winner["id"], loser["id"]],
+    )
+
+    # Mark any pending merge_candidates row covering this pair as resolved.
+    cursor.execute(
+        """
+        update brain.merge_candidates
+           set status = 'merged', resolved_at = now()
+         where status = 'pending'
+           and entity_a = least(%s::uuid, %s::uuid)
+           and entity_b = greatest(%s::uuid, %s::uuid)
+        """,
+        [loser["id"], winner["id"], loser["id"], winner["id"]],
+    )
+
+    correction_id = record_correction(
+        cursor,
+        target_kind="entity",
+        target_id=loser["id"],
+        before={
+            "canonical_name": loser["canonical_name"],
+            "aliases": loser["aliases"],
+            "merged_into": None,
+        },
+        after={"merged_into": winner["id"]},
+        reason=reason,
+        created_by=created_by,
+    )
+
+    return {
+        "loser_id": loser["id"],
+        "winner_id": winner["id"],
+        "correction_event_id": correction_id,
+        "alias_appended": alias_appended,
+    }
+
+
 def merge_entities(
     loser_id: str,
     winner_id: str,
@@ -70,94 +175,10 @@ def merge_entities(
 
     Returns {loser_id, winner_id, correction_event_id, alias_appended}.
     """
-    if loser_id == winner_id:
-        raise ValueError("merge_entities: loser_id and winner_id must differ")
-
     with transaction.atomic(), brain_cursor() as cursor:
-        cursor.execute(_ENTITY_FOR_UPDATE_SQL, [loser_id])
-        loser_rows = dictfetchall(cursor)
-        if not loser_rows:
-            raise ValueError(f"merge_entities: loser_id {loser_id} not found")
-        loser = loser_rows[0]
-        if loser["merged_into"]:
-            raise ValueError(
-                f"merge_entities: loser_id {loser_id} is already merged into "
-                f"{loser['merged_into']}"
-            )
-
-        cursor.execute(_ENTITY_FOR_UPDATE_SQL, [winner_id])
-        winner_rows = dictfetchall(cursor)
-        if not winner_rows:
-            raise ValueError(f"merge_entities: winner_id {winner_id} not found")
-        winner = winner_rows[0]
-        if winner["merged_into"]:
-            raise ValueError(
-                f"merge_entities: winner_id {winner_id} is itself merged into "
-                f"{winner['merged_into']}"
-            )
-        if loser["kind"] != winner["kind"]:
-            raise ValueError(
-                f"merge_entities: kind mismatch (loser={loser['kind']}, "
-                f"winner={winner['kind']})"
-            )
-
-        # Append the loser's canonical_name + every alias onto the winner so a
-        # future search by any historical surface form still resolves.
-        incoming = [loser["canonical_name"], *loser["aliases"]]
-        cursor.execute(
-            """
-            update brain.entities
-               set aliases = coalesce((
-                 select array_agg(distinct a)
-                   from unnest(coalesce(aliases, '{}'::text[]) || %s::text[]) a
-                  where a is not null
-                    and a <> %s
-               ), '{}'::text[])
-             where id = %s::uuid
-            returning aliases
-            """,
-            [incoming, winner["canonical_name"], winner["id"]],
+        return merge_entities_on_cursor(
+            cursor, loser_id, winner_id, reason=reason, created_by=created_by
         )
-        new_aliases = dictfetchall(cursor)[0]["aliases"]
-        alias_appended = len(new_aliases or []) > len(winner["aliases"])
-
-        cursor.execute(
-            "update brain.entities set merged_into = %s::uuid where id = %s::uuid",
-            [winner["id"], loser["id"]],
-        )
-
-        # Mark any pending merge_candidates row covering this pair as resolved.
-        cursor.execute(
-            """
-            update brain.merge_candidates
-               set status = 'merged', resolved_at = now()
-             where status = 'pending'
-               and entity_a = least(%s::uuid, %s::uuid)
-               and entity_b = greatest(%s::uuid, %s::uuid)
-            """,
-            [loser["id"], winner["id"], loser["id"], winner["id"]],
-        )
-
-        correction_id = record_correction(
-            cursor,
-            target_kind="entity",
-            target_id=loser["id"],
-            before={
-                "canonical_name": loser["canonical_name"],
-                "aliases": loser["aliases"],
-                "merged_into": None,
-            },
-            after={"merged_into": winner["id"]},
-            reason=reason,
-            created_by=created_by,
-        )
-
-    return {
-        "loser_id": loser["id"],
-        "winner_id": winner["id"],
-        "correction_event_id": correction_id,
-        "alias_appended": alias_appended,
-    }
 
 
 def rename_entity(
