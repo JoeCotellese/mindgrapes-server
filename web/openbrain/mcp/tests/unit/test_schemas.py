@@ -182,3 +182,60 @@ def test_disambiguation_option_value_is_omittable():
 
     bare = DisambiguationOption(label="A")
     assert "value" not in bare.model_dump(exclude_none=True)
+
+
+def test_resolve_entity_result_requires_recommendation():
+    from openbrain.mcp.schemas import ResolveEntityResult
+
+    props = ResolveEntityResult.model_json_schema()["properties"]
+    assert "recommendation" in props
+    r = ResolveEntityResult(
+        query_name="Ada", query_kind="person", candidates=[], recommendation="create"
+    )
+    assert r.recommendation == "create"
+
+
+def test_capture_result_provisional_defaults_false_and_needs_disambiguation_optional():
+    from openbrain.mcp.schemas import (
+        CaptureThoughtResult,
+        ExtractedEntity,
+        NeedsDisambiguation,
+    )
+
+    # provisional defaults False so a non-borderline participant needn't set it.
+    assert ExtractedEntity(surface="x", entity_id="e", action="created").provisional is (
+        False
+    )
+
+    # needs_disambiguation is omittable and drops from output when absent.
+    bare = CaptureThoughtResult(
+        experience_id="e1", is_structured=False, metadata={}
+    ).model_dump(exclude_none=True)
+    assert "needs_disambiguation" not in bare
+
+    block = NeedsDisambiguation(
+        surface="Vorptangle",
+        provisional_entity_id="ent-1",
+        candidate_entity_ids=["ent-1"],
+        token="tok-1",
+        question="Same?",
+        options=[{"label": "Same", "value": {"action": "confirm"}}],
+    )
+    assert block.candidate_entity_ids == ["ent-1"]
+
+
+def test_resolve_disambiguation_reconciliation_dropped_when_absent():
+    from openbrain.mcp.schemas import ResolveDisambiguationResult
+
+    plain = ResolveDisambiguationResult(
+        token="t", resolved_choice={"label": "A"}, question="Q?"
+    ).model_dump(exclude_none=True)
+    assert "reconciliation" not in plain
+
+    reconciled = ResolveDisambiguationResult(
+        token="t",
+        resolved_choice={"label": "Same"},
+        question="Q?",
+        reconciliation={"action": "confirmed", "entity_id": "e"},
+    )
+    assert reconciled.reconciliation["action"] == "confirmed"

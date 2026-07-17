@@ -17,6 +17,7 @@ from django.test import override_settings
 
 from openbrain.brain.embeddings import EmbeddingError
 from openbrain.brain.services.captures import capture
+from openbrain.brain.services.reviews import resolve_disambiguation, review_queue
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("brain_write_txn")]
 
@@ -213,3 +214,333 @@ def test_capture_embedding_failure_writes_nothing():
         _scalar("select count(*) from brain.experiences where content=%s", [marker])
         == 0
     )
+
+
+# --- #8: capture-then-reconcile with provisional participant bindings ----------
+#
+# similarity('Vorptangle','Zorptangle') ≈ 0.57 lands in the 0.55-0.85 borderline
+# band; a single-token person pair verifies at 0.0 (< 0.92), so the surface is
+# provisionally bound to the best guess and a disambiguation token is opened —
+# the exact shape the capture-then-reconcile contract exists to produce. Names
+# are distinctive so they don't collide with the shared dev brain, and the
+# existing entity carries no embedding so the vec channel doesn't dominate.
+
+
+def _seed_person(canonical_name):
+    ent_id = str(uuid.uuid4())
+    with connection.cursor() as cur:
+        cur.execute(
+            "insert into brain.entities (id, kind, canonical_name, aliases) "
+            "values (%s::uuid, 'person'::brain.entity_kind, %s, array[%s]::text[])",
+            [ent_id, canonical_name, canonical_name],
+        )
+    return ent_id
+
+
+@override_settings(BRAIN_EMBED_FN=f"{_MOD}._embed")
+def test_structured_capture_borderline_binds_provisional_and_returns_token():
+    existing = _seed_person("Zorptangle")
+
+    result = capture(
+        content="ran into them",
+        owner=OWNER,
+        account_id="household",
+        participants=[{"name": "Vorptangle"}],
+    )
+
+    extracted = result["extracted_entities"][0]
+    assert extracted["action"] == "provisional"
+    assert extracted["provisional"] is True
+    # Bound to the best guess (the existing entity), not a fresh duplicate.
+    assert extracted["entity_id"] == existing
+    assert (
+        _scalar(
+            "select count(*) from brain.entities where canonical_name=%s",
+            ["Vorptangle"],
+        )
+        == 0
+    )
+
+    # The mention is linked provisionally to the best-guess entity.
+    eid = result["experience_id"]
+    assert (
+        _scalar(
+            "select count(*) from brain.mentions "
+            "where experience_id=%s::uuid and entity_id=%s::uuid",
+            [eid, existing],
+        )
+        == 1
+    )
+
+    # A needs_disambiguation block carries the candidate ids + a token.
+    assert len(result["needs_disambiguation"]) == 1
+    block = result["needs_disambiguation"][0]
+    assert block["surface"] == "Vorptangle"
+    assert block["provisional_entity_id"] == existing
+    assert block["candidate_entity_ids"] == [existing]
+    token = block["token"]
+    assert len(block["options"]) == 2
+
+    # The provisional bind surfaces in review_queue's disambiguations lane.
+    q = review_queue("disambiguations")
+    assert token in {r["token"] for r in q["disambiguations"]}
+
+
+@override_settings(BRAIN_EMBED_FN=f"{_MOD}._embed")
+def test_structured_capture_confirm_reconciles_and_keeps_binding():
+    existing = _seed_person("Zorptangle")
+    result = capture(
+        content="saw them",
+        owner=OWNER,
+        account_id="household",
+        participants=[{"name": "Vorptangle"}],
+    )
+    eid = result["experience_id"]
+    token = result["needs_disambiguation"][0]["token"]
+
+    # Confirm (option 0 = "Same as Zorptangle").
+    res = resolve_disambiguation(token, 0)
+    assert res["reconciliation"]["action"] == "confirmed"
+    assert res["reconciliation"]["entity_id"] == existing
+
+    # The bind stands: the mention still points at the best-guess entity…
+    assert (
+        _scalar(
+            "select count(*) from brain.mentions "
+            "where experience_id=%s::uuid and entity_id=%s::uuid",
+            [eid, existing],
+        )
+        == 1
+    )
+    # …and the token drops out of the review queue.
+    assert (
+        _scalar(
+            "select status from brain.disambiguations where token=%s::uuid", [token]
+        )
+        == "resolved"
+    )
+    q = review_queue("disambiguations")
+    assert token not in {r["token"] for r in q["disambiguations"]}
+
+
+@override_settings(BRAIN_EMBED_FN=f"{_MOD}._embed")
+def test_structured_capture_reject_reconciles_and_repoints_mention():
+    existing = _seed_person("Zorptangle")
+    result = capture(
+        content="met them",
+        owner=OWNER,
+        account_id="household",
+        participants=[{"name": "Vorptangle"}],
+    )
+    eid = result["experience_id"]
+    token = result["needs_disambiguation"][0]["token"]
+
+    # Reject (option 1 = "Different — Vorptangle is another person").
+    res = resolve_disambiguation(token, 1)
+    assert res["reconciliation"]["action"] == "repointed"
+    assert res["reconciliation"]["mentions_repointed"] == 1
+    target = res["reconciliation"]["target_entity_id"]
+    assert target != existing
+
+    # The mention now points at the fresh entity, not the best guess.
+    assert (
+        _scalar(
+            "select count(*) from brain.mentions "
+            "where experience_id=%s::uuid and entity_id=%s::uuid",
+            [eid, existing],
+        )
+        == 0
+    )
+    assert (
+        _scalar(
+            "select count(*) from brain.mentions "
+            "where experience_id=%s::uuid and entity_id=%s::uuid",
+            [eid, target],
+        )
+        == 1
+    )
+    assert (
+        _scalar("select canonical_name from brain.entities where id=%s::uuid", [target])
+        == "Vorptangle"
+    )
+    assert (
+        _scalar(
+            "select status from brain.disambiguations where token=%s::uuid", [token]
+        )
+        == "resolved"
+    )
+
+
+def _token_for(result, surface):
+    for block in result["needs_disambiguation"]:
+        if block["surface"] == surface:
+            return block["token"]
+    raise AssertionError(f"no disambiguation block for surface {surface!r}")
+
+
+@override_settings(BRAIN_EMBED_FN=f"{_MOD}._embed")
+def test_structured_capture_reject_repoints_only_the_provisional_mention():
+    # Two surfaces provisional-bind to the SAME best-guess entity in one capture
+    # (both trgm ≈ 0.57 to the seed). Rejecting one guess must unbind only that
+    # mention and leave the sibling on the best-guess entity — not sweep the whole
+    # entity-in-experience the way an experience-scoped split would.
+    existing = _seed_person("Zorptangle")
+    result = capture(
+        content="ran into both of them",
+        owner=OWNER,
+        account_id="household",
+        participants=[{"name": "Vorptangle"}, {"name": "Worptangle"}],
+    )
+    eid = result["experience_id"]
+    assert all(e["action"] == "provisional" for e in result["extracted_entities"])
+    # Both mentions landed on the best-guess entity.
+    assert (
+        _scalar(
+            "select count(*) from brain.mentions where experience_id=%s::uuid "
+            "and entity_id=%s::uuid",
+            [eid, existing],
+        )
+        == 2
+    )
+
+    res = resolve_disambiguation(_token_for(result, "Vorptangle"), 1)
+    assert res["reconciliation"]["action"] == "repointed"
+    assert res["reconciliation"]["mentions_repointed"] == 1
+    target = res["reconciliation"]["target_entity_id"]
+
+    # The rejected surface moved onto a fresh entity…
+    assert (
+        _scalar(
+            "select count(*) from brain.mentions where experience_id=%s::uuid "
+            "and entity_id=%s::uuid and surface_form=%s",
+            [eid, target, "Vorptangle"],
+        )
+        == 1
+    )
+    # …and the co-mentioned sibling is UNTOUCHED on the best-guess entity.
+    assert (
+        _scalar(
+            "select count(*) from brain.mentions where experience_id=%s::uuid "
+            "and entity_id=%s::uuid",
+            [eid, existing],
+        )
+        == 1
+    )
+    assert (
+        _scalar(
+            "select surface_form from brain.mentions where experience_id=%s::uuid "
+            "and entity_id=%s::uuid",
+            [eid, existing],
+        )
+        == "Worptangle"
+    )
+    # The sibling's token is still pending for its own decision.
+    q = review_queue("disambiguations")
+    assert _token_for(result, "Worptangle") in {
+        r["token"] for r in q["disambiguations"]
+    }
+
+
+@override_settings(BRAIN_EMBED_FN=f"{_MOD}._embed")
+def test_structured_capture_reject_leaves_explicitly_provided_mention():
+    # A provided (non-provisional) participant and a provisional sibling both bind
+    # to the same entity. Rejecting the provisional guess must never drag the
+    # explicitly-provided mention off the entity the caller pinned.
+    existing = _seed_person("Zorptangle")
+    result = capture(
+        content="the two of them",
+        owner=OWNER,
+        account_id="household",
+        participants=[
+            {"name": "Zorptangle", "entity_id": existing},
+            {"name": "Vorptangle"},
+        ],
+    )
+    eid = result["experience_id"]
+    provided = next(
+        e for e in result["extracted_entities"] if e["action"] == "provided"
+    )
+    assert provided["provisional"] is False
+    assert (
+        _scalar(
+            "select count(*) from brain.mentions where experience_id=%s::uuid "
+            "and entity_id=%s::uuid",
+            [eid, existing],
+        )
+        == 2
+    )
+
+    resolve_disambiguation(_token_for(result, "Vorptangle"), 1)
+
+    # The provided mention stays pinned to the entity the caller chose.
+    assert (
+        _scalar(
+            "select count(*) from brain.mentions where experience_id=%s::uuid "
+            "and entity_id=%s::uuid",
+            [eid, existing],
+        )
+        == 1
+    )
+    assert (
+        _scalar(
+            "select surface_form from brain.mentions where experience_id=%s::uuid "
+            "and entity_id=%s::uuid",
+            [eid, existing],
+        )
+        == "Zorptangle"
+    )
+
+
+@override_settings(BRAIN_EMBED_FN=f"{_MOD}._embed")
+def test_structured_capture_confirm_appends_alias_so_next_capture_reuses():
+    # Confirming a provisional bind must teach the resolver: append the surface as
+    # an alias so the NEXT capture of it strong-matches and reuses the entity
+    # instead of re-opening a disambiguation.
+    existing = _seed_person("Zorptangle")
+    first = capture(
+        content="saw them once",
+        owner=OWNER,
+        account_id="household",
+        participants=[{"name": "Vorptangle"}],
+    )
+    token = first["needs_disambiguation"][0]["token"]
+
+    res = resolve_disambiguation(token, 0)
+    assert res["reconciliation"]["action"] == "confirmed"
+    assert res["reconciliation"]["alias_appended"] is True
+    assert "Vorptangle" in _scalar(
+        "select aliases from brain.entities where id=%s::uuid", [existing]
+    )
+
+    # The next capture of that surface now strong-matches — no fresh guess.
+    second = capture(
+        content="saw them again",
+        owner=OWNER,
+        account_id="household",
+        participants=[{"name": "Vorptangle"}],
+    )
+    extracted = second["extracted_entities"][0]
+    assert extracted["action"] == "matched"
+    assert extracted["provisional"] is False
+    assert extracted["entity_id"] == existing
+    assert second["needs_disambiguation"] == []
+
+
+@override_settings(BRAIN_EMBED_FN=f"{_MOD}._embed")
+def test_structured_capture_confident_pair_auto_merges_non_provisionally():
+    # #16 interaction: a borderline pair that clears match_score >= 0.92 is
+    # auto-merged and bound NON-provisionally — no needs_disambiguation block.
+    existing = _seed_person("Jon Zorptangle")
+
+    result = capture(
+        content="talked with them",
+        owner=OWNER,
+        account_id="household",
+        participants=[{"name": "John Zorptangle"}],
+    )
+
+    extracted = result["extracted_entities"][0]
+    assert extracted["action"] == "auto_merged"
+    assert extracted["provisional"] is False
+    assert extracted["entity_id"] == existing  # links to the surviving entity
+    assert result["needs_disambiguation"] == []

@@ -370,6 +370,76 @@ def test_capture_thought_structured_converts_input_models(monkeypatch):
     assert captured["source_kind"] == "transcript"
 
 
+def test_capture_thought_surfaces_provisional_and_needs_disambiguation(monkeypatch):
+    def fake(**kwargs):
+        return {
+            "experience_id": "e9",
+            "is_structured": True,
+            "metadata": {},
+            "extracted_entities": [
+                {
+                    "surface": "Vorptangle",
+                    "entity_id": "ent-existing",
+                    "action": "provisional",
+                    "provisional": True,
+                }
+            ],
+            "borderline_matches": [],
+            "needs_disambiguation": [
+                {
+                    "surface": "Vorptangle",
+                    "provisional_entity_id": "ent-existing",
+                    "candidate_entity_ids": ["ent-existing"],
+                    "token": "tok-1",
+                    "question": "Is Vorptangle the same as Zorptangle?",
+                    "options": [
+                        {"label": "Same as Zorptangle", "value": {"action": "confirm"}},
+                        {"label": "Different", "value": {"action": "reject"}},
+                    ],
+                }
+            ],
+            "claims_pending": True,
+        }
+
+    monkeypatch.setattr(captures, "capture", fake)
+    server = build_server()
+
+    async def go():
+        async with Client(server) as c:
+            return await c.call_tool(
+                "capture_thought",
+                {"content": "ran into them", "participants": [{"name": "Vorptangle"}]},
+            )
+
+    sc = _run(go()).structured_content
+    assert sc["extracted_entities"][0]["provisional"] is True
+    block = sc["needs_disambiguation"][0]
+    assert block["token"] == "tok-1"
+    assert block["candidate_entity_ids"] == ["ent-existing"]
+    assert len(block["options"]) == 2
+
+
+def test_resolve_entity_returns_recommendation(monkeypatch):
+    def fake(name, **kwargs):
+        return {
+            "query_name": name,
+            "query_kind": "person",
+            "candidates": [],
+            "recommendation": "create",
+        }
+
+    monkeypatch.setattr(entities, "resolve_entity", fake)
+    server = build_server()
+
+    async def go():
+        async with Client(server) as c:
+            return await c.call_tool("resolve_entity", {"name": "Nobody"})
+
+    sc = _run(go()).structured_content
+    assert sc["recommendation"] == "create"
+    assert sc["candidates"] == []
+
+
 def test_capture_thought_error_is_sanitized(monkeypatch):
     def boom(**kw):
         raise ValueError("capture boom")

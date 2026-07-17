@@ -21,11 +21,13 @@ from openbrain.brain.services.claim_writer import (
     new_accumulator,
 )
 from openbrain.brain.services.entities import (
+    append_alias,
     merge_entities,
     rename_entity,
     resolve_entity,
     retract_claim,
     split_entity,
+    split_mention,
     unmerge_entity,
 )
 from openbrain.brain.services.entity_resolver import (
@@ -333,6 +335,118 @@ def test_split_zero_scope_writes_no_correction():
     assert res["correction_event_ids"] == []
 
 
+# --- split_mention ------------------------------------------------------------
+
+
+def test_split_mention_moves_only_the_scoped_surface():
+    # Two surfaces of the same entity co-mentioned in one experience: splitting
+    # one surface must move ONLY that mention and leave the sibling on the source
+    # (the guarantee split_entity's experience-wide sweep can't make).
+    src = _seed_entity(canonical_name="Qwzzlefimp", kind="person")
+    exp = _seed_experience()
+    _seed_mention(exp, src, "Bwzzlefimp")
+    _seed_mention(exp, src, "Dwzzlefimp")
+
+    res = split_mention(
+        src, exp, "Bwzzlefimp", "people", {"canonical_name": "Bwzzlefimp"}
+    )
+
+    tgt = res["target_entity_id"]
+    assert res["target_created"] is True
+    assert res["mentions_repointed"] == 1
+    assert res["correction_event_ids"]
+    # The rejected surface moved onto the fresh entity…
+    assert (
+        _scalar(
+            "select count(*) from brain.mentions "
+            "where entity_id=%s::uuid and experience_id=%s::uuid and surface_form=%s",
+            [tgt, exp, "Bwzzlefimp"],
+        )
+        == 1
+    )
+    # …and the sibling surface is untouched on the source.
+    assert (
+        _scalar(
+            "select count(*) from brain.mentions "
+            "where entity_id=%s::uuid and experience_id=%s::uuid and surface_form=%s",
+            [src, exp, "Dwzzlefimp"],
+        )
+        == 1
+    )
+    assert (
+        _scalar(
+            "select count(*) from brain.mentions "
+            "where entity_id=%s::uuid and experience_id=%s::uuid",
+            [src, exp],
+        )
+        == 1
+    )
+
+
+def test_split_mention_leaves_other_experiences_untouched():
+    src = _seed_entity(kind="person")
+    exp1 = _seed_experience()
+    exp2 = _seed_experience()
+    _seed_mention(exp1, src, "Same")
+    _seed_mention(exp2, src, "Same")
+
+    res = split_mention(src, exp1, "Same", "people", {"canonical_name": "Split-off"})
+
+    assert res["mentions_repointed"] == 1
+    # The identically-surfaced mention in the OTHER experience stays on the source.
+    assert (
+        _scalar(
+            "select count(*) from brain.mentions "
+            "where entity_id=%s::uuid and experience_id=%s::uuid",
+            [src, exp2],
+        )
+        == 1
+    )
+
+
+def test_split_mention_no_matching_binding_writes_no_correction():
+    src = _seed_entity(kind="person")
+    exp = _seed_experience()
+    _seed_mention(exp, src, "Present")
+    # A surface that isn't bound here moves nothing and audits nothing.
+    res = split_mention(src, exp, "Absent", "people", {"canonical_name": "Nope"})
+    assert res["mentions_repointed"] == 0
+    assert res["correction_event_ids"] == []
+
+
+def test_split_mention_merged_source_raises():
+    winner = _seed_entity()
+    src = _seed_entity(merged_into=winner)
+    exp = _seed_experience()
+    with pytest.raises(ValueError, match="unmerge it first"):
+        split_mention(src, exp, "S", "people", {"canonical_name": "Z"})
+
+
+# --- append_alias -------------------------------------------------------------
+
+
+def test_append_alias_adds_then_is_idempotent():
+    e = _seed_entity(kind="person", canonical_name="Base", aliases=[])
+    assert append_alias(e, "Nick") is True
+    assert _scalar("select aliases from brain.entities where id=%s::uuid", [e]) == [
+        "Nick"
+    ]
+    # Re-appending the same surface is a no-op on content but still hit a live row.
+    assert append_alias(e, "Nick") is True
+    assert _scalar("select aliases from brain.entities where id=%s::uuid", [e]) == [
+        "Nick"
+    ]
+
+
+def test_append_alias_skips_merged_away_entity():
+    winner = _seed_entity()
+    loser = _seed_entity(merged_into=winner)
+    assert append_alias(loser, "Ghost") is False
+    assert (
+        _scalar("select aliases from brain.entities where id=%s::uuid", [loser]) == []
+    )
+
+
 # --- unmerge_entity -----------------------------------------------------------
 
 
@@ -375,6 +489,26 @@ def test_resolve_entity_ranks_candidate_by_name():
     assert isinstance(top["trgm_score"], float) and top["trgm_score"] > 0.3
     assert isinstance(top["phon_match"], bool)
     assert isinstance(top["fused_score"], float)
+
+
+@override_settings(
+    BRAIN_EMBED_FN="openbrain.brain.tests.integration.test_entities._zero_embed"
+)
+def test_resolve_entity_recommends_reuse_on_exact_name():
+    # An exact-name candidate scores trgm 1.0 → the server bands it 'reuse', so the
+    # caller no longer replicates the 0.85 cut-point (#8).
+    _seed_entity(kind="person", canonical_name="Quilbrimhaven Xotl")
+    res = resolve_entity("Quilbrimhaven Xotl", kind="person", top_k=5)
+    assert res["recommendation"] == "reuse"
+
+
+@override_settings(
+    BRAIN_EMBED_FN="openbrain.brain.tests.integration.test_entities._zero_embed"
+)
+def test_resolve_entity_recommends_create_when_name_is_new():
+    # A name with no candidate (or only a distant one) bands 'create'.
+    res = resolve_entity(f"Zznovel {uuid.uuid4().hex}", kind="person", top_k=5)
+    assert res["recommendation"] == "create"
 
 
 # --- #171: alias scoring is per-alias, not against a concatenated haystack ---
@@ -596,6 +730,7 @@ def test_resolve_entity_phonetic_tie_no_trgm_signal_ranks_deterministically():
     assert by_id[a]["fused_score"] == by_id[b]["fused_score"]
     assert by_id[a]["fused_score"] < 0.000264
 
+
 # --- #16: second-stage verification in the resolver's borderline band ----------
 #
 # The trgm band (0.55-0.85) that used to queue every pair now runs a Jaro-Winkler
@@ -670,30 +805,38 @@ def test_borderline_confident_verification_auto_merges_and_is_reversible():
     )
 
 
-def test_borderline_weak_verification_still_queues():
+def test_borderline_weak_verification_binds_provisional():
     # similarity('Vorptangle','Zorptangle') ≈ 0.57 (in band) but a single-token
-    # person pair verifies at 0.0 — it must queue, not auto-merge, exactly as before.
+    # person pair verifies at 0.0 — below the auto-merge bar it is provisionally
+    # bound to the best guess (#8): no duplicate entity is minted, no
+    # merge_candidate is queued, and it resolves to the existing entity.
     existing = _seed_entity(kind="person", canonical_name="Zorptangle")
     exp = _seed_experience()
 
     outcome = _resolve_new("Vorptangle", "person", exp)
 
-    assert outcome["action"] == "borderline"
-    assert outcome["borderline_entity_id"] == existing
+    assert outcome["action"] == "provisional"
+    assert outcome["provisional"] is True
+    assert outcome["entity_id"] == existing  # bound to the best guess
+    assert outcome["candidate_entity_id"] == existing
+    assert outcome["candidate_name"] == "Zorptangle"
     assert outcome["verification_score"] < 0.92
-    new_id = outcome["entity_id"]
-    assert (
-        _scalar("select merged_into from brain.entities where id=%s::uuid", [new_id])
-        is None
-    )
-    lo, hi = sorted([existing, new_id])
+    # No fresh "Vorptangle" entity was created…
     assert (
         _scalar(
-            "select status from brain.merge_candidates "
-            "where entity_a=%s::uuid and entity_b=%s::uuid",
-            [lo, hi],
+            "select count(*) from brain.entities where canonical_name=%s",
+            ["Vorptangle"],
         )
-        == "pending"
+        == 0
+    )
+    # …and no merge_candidate was queued for the existing entity.
+    assert (
+        _scalar(
+            "select count(*) from brain.merge_candidates "
+            "where entity_a=%s::uuid or entity_b=%s::uuid",
+            [existing, existing],
+        )
+        == 0
     )
 
 

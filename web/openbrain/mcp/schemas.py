@@ -165,6 +165,10 @@ class ExtractedEntity(BaseModel):
     surface: str
     entity_id: str
     action: str
+    # True when the bind is a borderline best-guess awaiting human reconciliation
+    # (#8). Present on every structured-path participant; false for strong-match,
+    # clear-miss, provided-id, and auto-merge binds.
+    provisional: bool = False
 
 
 class BorderlineMatch(BaseModel):
@@ -174,6 +178,26 @@ class BorderlineMatch(BaseModel):
     trgm_score: float
 
 
+class DisambiguationOption(BaseModel):
+    label: str
+    # Free-form payload (e.g. {entity_id: "..."}); omittable so an option can be
+    # a bare label — the shipped {label, value?} shape.
+    value: Any | None = None
+
+
+class NeedsDisambiguation(BaseModel):
+    # One block per provisionally-bound participant (#8): the surface, the
+    # best-guess entity it was bound to, the candidate ids, and the
+    # request_disambiguation token + question/options the caller surfaces to the
+    # user (then feeds the choice back through resolve_disambiguation).
+    surface: str
+    provisional_entity_id: str
+    candidate_entity_ids: list[str]
+    token: str
+    question: str
+    options: list[DisambiguationOption]
+
+
 class CaptureThoughtResult(BaseModel):
     experience_id: str
     is_structured: bool
@@ -181,6 +205,9 @@ class CaptureThoughtResult(BaseModel):
     # Structured-path-only fields: omittable, dropped from output on the bare path.
     extracted_entities: list[ExtractedEntity] | None = None
     borderline_matches: list[BorderlineMatch] | None = None
+    # Provisional best-guess binds the caller must reconcile (#8); empty when the
+    # capture had no borderline participant.
+    needs_disambiguation: list[NeedsDisambiguation] | None = None
     claims_pending: bool | None = None
 
 
@@ -242,13 +269,6 @@ class PendingReviewsResource(BaseModel):
 # ---------------------------------------------------------------------------
 # Slice C — entity repair / recall / review tools (input + output)
 # ---------------------------------------------------------------------------
-
-
-class DisambiguationOption(BaseModel):
-    label: str
-    # Free-form payload (e.g. {entity_id: "..."}); omittable so an option can be
-    # a bare label — the shipped {label, value?} shape.
-    value: Any | None = None
 
 
 class UpdateExperiencePatch(BaseModel):
@@ -346,6 +366,10 @@ class ResolveEntityResult(BaseModel):
     query_name: str
     query_kind: str
     candidates: list[ResolveEntityCandidate]
+    # Server-computed banding of the top candidate's trgm_score (#8): 'reuse'
+    # (pass the top entity_id back), 'disambiguate' (borderline — surface options),
+    # or 'create' (no confident match). Decouples the cut-points from client prompts.
+    recommendation: Literal["reuse", "disambiguate", "create"]
 
 
 class MergeCandidateItem(BaseModel):
@@ -423,3 +447,7 @@ class ResolveDisambiguationResult(BaseModel):
     token: str
     resolved_choice: Any
     question: str
+    # Present only when the token reconciled a provisional participant binding
+    # (#8): {action: 'confirmed', entity_id} on confirm, or {action: 'repointed',
+    # ...split result...} on reject. Dropped from output for a plain disambiguation.
+    reconciliation: Any | None = None

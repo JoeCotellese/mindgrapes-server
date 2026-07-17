@@ -3,9 +3,12 @@
 
 from openbrain.brain.services.name_matching import (
     AUTO_MERGE_THRESHOLD,
+    DISAMBIGUATE_THRESHOLD,
+    REUSE_THRESHOLD,
     jaro,
     jaro_winkler,
     match_score,
+    recommend_action,
 )
 
 # --- Jaro / Jaro-Winkler known-value cases ------------------------------------
@@ -153,3 +156,23 @@ def test_queue_delta_report():
 
     # Sanity on the counts used for the reported delta.
     assert len(same_auto_merged) + len(same_still_queued) == len(same)
+
+
+# --- #8: recommend_action banding (the resolve_entity recommendation) ----------
+
+
+def test_recommend_action_reuse_above_match_bar():
+    assert recommend_action(0.90) == "reuse"
+    assert recommend_action(REUSE_THRESHOLD + 0.0001) == "reuse"
+
+
+def test_recommend_action_disambiguate_in_borderline_band():
+    assert recommend_action(0.70) == "disambiguate"
+    assert recommend_action(REUSE_THRESHOLD) == "disambiguate"
+    assert recommend_action(DISAMBIGUATE_THRESHOLD + 0.0001) == "disambiguate"
+
+
+def test_recommend_action_create_at_or_below_borderline_floor():
+    assert recommend_action(DISAMBIGUATE_THRESHOLD) == "create"
+    assert recommend_action(0.30) == "create"
+    assert recommend_action(0.0) == "create"
