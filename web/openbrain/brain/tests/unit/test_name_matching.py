@@ -62,6 +62,11 @@ FIXTURE = [
     # -- trap: two distinct people who share a common given name --
     ("person", "Karen", [], "person", "Karen", [], False),
     ("person", "Karen Smith", [], "person", "Karen Jones", [], False),
+    # -- trap: distinct people whose full names sit in the 0.90-0.92 Jaro-Winkler band.
+    #    Surfaced by the #31 prod dry-run: the fixture had no pair in this band, so a
+    #    scorer whose merge bar dips below 0.92 (fs did, at 0.90) auto-merges them. --
+    ("person", "Dave Mess", [], "person", "Dave Sykes", [], False),
+    ("person", "Ukrainian woman", [], "person", "Ukrainian founder", [], False),
     # -- trap: distinct people who share an *identical* full name (a full name is
     #    not a unique identifier — there are many Michael Jordans) --
     ("person", "Michael Jordan", [], "person", "Michael Jordan", [], False),
@@ -121,29 +126,34 @@ def test_generational_suffix_pairs_stay_gated():
     assert match_score("person", "John Smith", [], "person", "John Smith Jr", []) < (
         AUTO_MERGE_THRESHOLD
     )
-    assert match_score(
-        "person", "John Smith Jr", [], "person", "John Smith Sr", []
-    ) < AUTO_MERGE_THRESHOLD
+    assert (
+        match_score("person", "John Smith Jr", [], "person", "John Smith Sr", [])
+        < AUTO_MERGE_THRESHOLD
+    )
 
 
 def test_added_name_component_stays_gated():
     """An inserted middle name is a real distinction, not an abbreviation."""
-    assert match_score(
-        "person", "Mary Watson", [], "person", "Mary Jane Watson", []
-    ) < AUTO_MERGE_THRESHOLD
+    assert (
+        match_score("person", "Mary Watson", [], "person", "Mary Jane Watson", [])
+        < AUTO_MERGE_THRESHOLD
+    )
 
 
 def test_identical_full_name_persons_stay_gated():
     """A full name is not a unique identifier; identical names alone stay gated."""
-    assert match_score(
-        "person", "Michael Jordan", [], "person", "Michael Jordan", []
-    ) < AUTO_MERGE_THRESHOLD
+    assert (
+        match_score("person", "Michael Jordan", [], "person", "Michael Jordan", [])
+        < AUTO_MERGE_THRESHOLD
+    )
 
 
 def test_punctuation_shape_mismatch_queues_instead_of_merging():
     """Non-person names that match only after punctuation-folding are a review
     call, not an identity (#29): the score lands in the queue band."""
-    score = match_score("concept", "Obsidian vault", [], "concept", "~/obsidian-vault", [])
+    score = match_score(
+        "concept", "Obsidian vault", [], "concept", "~/obsidian-vault", []
+    )
     assert DISAMBIGUATE_THRESHOLD < score < AUTO_MERGE_THRESHOLD
     # Case/whitespace variants and alias-backed identity still auto-merge.
     assert match_score("org", "NEXTGRES", [], "org", "Nextgres", []) == 1.0
@@ -175,9 +185,10 @@ def test_bare_name_containment_scores_review_band_not_auto_merge():
 
 def test_same_suffix_spelling_variant_still_merges():
     """Agreeing on the suffix, a core spelling variant is still a confident match."""
-    assert match_score(
-        "person", "Jon Smith Jr", [], "person", "John Smith Jr", []
-    ) >= AUTO_MERGE_THRESHOLD
+    assert (
+        match_score("person", "Jon Smith Jr", [], "person", "John Smith Jr", [])
+        >= AUTO_MERGE_THRESHOLD
+    )
 
 
 def test_queue_delta_report():

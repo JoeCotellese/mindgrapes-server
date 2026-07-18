@@ -41,10 +41,13 @@ _PERSON = "person"
 AUTO_MERGE_THRESHOLD = 0.90
 QUEUE_THRESHOLD = 0.60
 
-# A full-name spelling variant clears this Jaro-Winkler bar and scores as a confident
-# same-name; a shared-given-name pair ("Karen Smith"/"Karen Jones" ≈ 0.81) lands in the
-# review band below it. Same bar the name_matching seam was tuned to (#16/#29).
-_JW_MERGE = 0.90
+# A full-name spelling variant clears this Jaro-Winkler bar and merges; a pair below it
+# lands in the review band. Pinned to name_matching.AUTO_MERGE_THRESHOLD (0.92), NOT
+# lower: the #31 prod dry-run showed 0.90 auto-merged 'Dave Mess'/'Dave Sykes' (0.913)
+# and 'Ukrainian woman'/'Ukrainian founder' (0.901) — distinct people in the 0.90-0.92
+# band the current matcher correctly queues. The 29-row fixture missed it (no pair sat
+# in that band); the two pairs are now fixture rows so the bar can't drift back.
+_JW_MERGE = 0.92
 _JW_REVIEW = 0.75
 
 # Per-feature, per-level log2 Bayes factors. Positive = evidence for same-entity,
