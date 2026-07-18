@@ -184,17 +184,18 @@ def test_plan_still_queues_identical_person_names():
     assert [(a, b) for a, b, _ in plan["queue"]] == [("k1", "k2")]
 
 
-# --- margin-over-runner-up gate (#31 phase 2) ----------------------------------
+# --- contested-merge gate (#31 phase 2) ----------------------------------------
 
 
-def test_plan_queues_near_tie_merge_candidates_rather_than_guessing():
-    # One entity strongly matches two distinct full-name variants at nearly the same
-    # score. A pairwise scorer would merge both in isolation; the runner-up margin gate
-    # sees the near-tie and demotes to the queue — the Richard->{Mironov,Woundy} class.
+def test_plan_queues_entity_contested_between_distinct_identities():
+    # One entity strongly merges with two OTHER entities that do not merge with each
+    # other — it is claimed by two distinct identities and the pair alone can't say
+    # which. The gate demotes to review instead of guessing (the Richard->{Woundy,
+    # Mironov} class, expressed at the merge level via bridging aliases).
     ents = [
-        _e("x", "person", "Jon Smith"),
-        _e("a", "person", "John Smith"),
-        _e("b", "person", "Jon Smithe"),
+        _e("x", "org", "Apple", ["Apple Inc", "Apple Records"]),
+        _e("a", "org", "Apple Inc"),
+        _e("b", "org", "Apple Records"),
     ]
     plan = plan_dedup(ents, scorer=probabilistic)
     assert plan["merges"] == []
@@ -226,6 +227,23 @@ def test_plan_single_merge_candidate_unaffected_by_gate():
     ]
     plan = plan_dedup(ents, scorer=probabilistic)
     assert len(plan["merges"]) == 1
+    assert plan["queue"] == []
+
+
+def test_plan_merges_mutual_variant_cluster_not_a_contest():
+    # Three spelling variants of ONE person all mutually merge — a single cluster,
+    # not a contested identity. The gate must NOT demote them: an entity with several
+    # merge partners that themselves merge is unambiguous, unlike an entity torn
+    # between two distinct people. (Regression for the count-based gate that demoted
+    # every entity with >=2 merges because FS quantizes all merges to ~0.998.)
+    ents = [
+        _e("a", "person", "Jon Smith"),
+        _e("b", "person", "John Smith"),
+        _e("c", "person", "Jhon Smith"),
+    ]
+    plan = plan_dedup(ents, scorer=probabilistic)
+    merged_ids = {i for pair in plan["merges"] for i in pair[:2]}
+    assert merged_ids == {"a", "b", "c"}
     assert plan["queue"] == []
 
 

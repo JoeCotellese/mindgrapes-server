@@ -43,14 +43,14 @@ _PERSON = "person"
 AUTO_MERGE_THRESHOLD = 0.90
 QUEUE_THRESHOLD = 0.60
 
-# Margin-over-runner-up gate (#31 phase 2). Auto-merge is a claim of *unique* identity,
-# but a pairwise score can't see that a second entity fits nearly as well — the class
-# that produced Richard->Rich Mironov *because Richard Woundy also existed*. When an
-# entity's best merge candidate does not beat its runner-up by at least this margin in
-# P(match), the tie is unresolvable from the pair alone: the planner demotes it to the
-# review queue instead of guessing. The planner reads this via getattr, so a scorer that
-# doesn't advertise it simply runs without the gate.
-AUTO_MERGE_MARGIN = 0.05
+# Contested-merge gate opt-in (#31 phase 2). Auto-merge is a claim of *unique* identity,
+# but a pairwise score can't see that a second entity fits equally well — the class that
+# produced Richard->Rich Mironov *because Richard Woundy also existed*. A score margin
+# can't catch it here: every confident merge pins to ~0.998, so all near-ties look
+# identical. The planner instead demotes any entity claimed by two merge partners that
+# don't merge with each other (dedup._contested_entities). This flag advertises the gate;
+# the default name_matching scorer omits it and runs ungated.
+CONTESTED_MERGE_GATE = True
 
 # A full-name spelling variant clears this Jaro-Winkler bar and merges; a pair below it
 # lands in the review band. Pinned to name_matching.AUTO_MERGE_THRESHOLD (0.92), NOT

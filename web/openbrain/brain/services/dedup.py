@@ -166,24 +166,40 @@ def _cap_queue(queue: list[tuple[str, str, float]]) -> list[tuple[str, str, floa
     return kept
 
 
-def _near_tie_entities(
-    merges: list[tuple[str, str, float, str | None]], margin: float
+def _contested_entities(
+    merges: list[tuple[str, str, float, str | None]],
 ) -> set[str]:
-    """Ids whose best merge candidate fails to beat their runner-up by `margin`
-    P(match). Such an entity is torn between two merge-eligible partners; the pair
-    alone can't resolve it, so the caller demotes those merges to review (#31 phase 2)."""
-    if margin <= 0.0:
-        return set()
-    ent_scores: dict[str, list[float]] = defaultdict(list)
-    for loser_id, winner_id, score, _subset_id in merges:
-        ent_scores[loser_id].append(score)
-        ent_scores[winner_id].append(score)
-    near_tie: set[str] = set()
-    for eid, scores in ent_scores.items():
-        top = sorted(scores, reverse=True)
-        if len(top) >= 2 and top[0] - top[1] < margin:
-            near_tie.add(eid)
-    return near_tie
+    """Ids claimed by two merge partners that do not themselves merge — an entity
+    torn between distinct identities. Auto-merging it would collapse both partners
+    together through it (an alias-bridged 'Apple' merging 'Apple Inc' into 'Apple
+    Records'), so the caller demotes those merges to review (#31 phase 2).
+
+    An entity whose merge partners all merge with each other is one cluster — three
+    spelling variants of a name, not a contest — and stays merge-eligible. This is
+    what the count of candidates alone can't tell apart: the probabilistic scorer
+    pins every confident merge to ~0.998, so a raw score margin never discriminates.
+
+    # ponytail: 'partners must be a clique' — if incomplete blocking leaves a true
+    # cluster with a missing internal edge, that entity errs to review (the safe
+    # direction), never to a bad merge. Tighten to articulation points if it bites.
+    """
+    merge_pairs = {
+        frozenset((loser_id, winner_id)) for loser_id, winner_id, _s, _sub in merges
+    }
+    partners: dict[str, set[str]] = defaultdict(set)
+    for loser_id, winner_id, _s, _sub in merges:
+        partners[loser_id].add(winner_id)
+        partners[winner_id].add(loser_id)
+    contested: set[str] = set()
+    for eid, nbrs in partners.items():
+        others = sorted(nbrs)
+        if any(
+            frozenset((others[i], others[j])) not in merge_pairs
+            for i in range(len(others))
+            for j in range(i + 1, len(others))
+        ):
+            contested.add(eid)
+    return contested
 
 
 def _pick_winner(a: dict, b: dict) -> tuple[dict, dict]:
@@ -248,14 +264,19 @@ def plan_dedup(entities: list[dict], scorer=name_matching) -> dict:
             subset_winners[subset_id].add(winner_id)
     ambiguous = {sid for sid, winners in subset_winners.items() if len(winners) > 1}
 
-    # Margin-over-runner-up gate (#31 phase 2): auto-merge only when an entity's best
-    # merge candidate decisively beats its runner-up (generalizes the abbreviation guard
-    # above to full-name near-ties). Scorer-advertised; a scorer without it runs ungated.
-    near_tie = _near_tie_entities(merges, getattr(scorer, "AUTO_MERGE_MARGIN", 0.0))
+    # Contested-merge gate (#31 phase 2): an entity claimed by two merge partners that
+    # don't merge with each other is torn between distinct identities — demote rather
+    # than collapse both through it (generalizes the abbreviation guard above from bare
+    # names to any bridging entity). Scorer-advertised; a scorer without it runs ungated.
+    contested = (
+        _contested_entities(merges)
+        if getattr(scorer, "CONTESTED_MERGE_GATE", False)
+        else set()
+    )
 
     safe_merges: list[tuple[str, str, float]] = []
     for loser_id, winner_id, score, subset_id in merges:
-        if subset_id in ambiguous or loser_id in near_tie or winner_id in near_tie:
+        if subset_id in ambiguous or loser_id in contested or winner_id in contested:
             lo, hi = sorted((loser_id, winner_id))
             queue.append((lo, hi, score))
         else:
