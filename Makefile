@@ -50,4 +50,5 @@ dev-test:         ## Run the web unit tests inside the web container
 dev-test-integration:  ## Run brain.* + mcp integration tests against the dev Postgres
 	$(DEV_COMPOSE) exec web python -m pytest \
 		openbrain/brain/tests/integration openbrain/mcp/tests/integration \
+		openbrain/core/tests/integration \
 		-m integration --ds=config.settings.test_integration

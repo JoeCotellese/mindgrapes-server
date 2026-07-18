@@ -9,17 +9,15 @@ so these tests mint tokens with `sign_access_token` and drive requests through a
 RequestFactory — no HTTP layer, no Postgres.
 """
 
+import pytest
+from django.contrib.auth import get_user_model
 from django.test import RequestFactory
 from joserfc.jwk import OKPKey
-
-import pytest
 
 from openbrain.core.views import _verify_bearer
 from openbrain.oauth import jwt as oauth_jwt
 
 pytestmark = pytest.mark.django_db
-
-from django.contrib.auth import get_user_model
 
 User = get_user_model()
 
