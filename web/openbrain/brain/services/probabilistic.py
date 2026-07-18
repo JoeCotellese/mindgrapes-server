@@ -35,11 +35,22 @@ from openbrain.brain.services.name_matching import (
 
 _PERSON = "person"
 
-# Decision cut-points in probability space. Auto-merge is deliberately high; the
-# queue floor sits above the 0.5 no-evidence prior so a pair needs real positive
-# signal to reach human review (bare noise is dropped, mirroring the #27 floor).
+# Decision cut-points in probability space. The gap between them is the asymmetric
+# cost made concrete: a false merge is far worse than a false queue-row, so the
+# auto-merge bar is deliberately high while the queue floor sits just above the 0.5
+# no-evidence prior — a pair needs real positive signal to reach human review (bare
+# noise is dropped, mirroring the #27 floor).
 AUTO_MERGE_THRESHOLD = 0.90
 QUEUE_THRESHOLD = 0.60
+
+# Contested-merge gate opt-in (#31 phase 2). Auto-merge is a claim of *unique* identity,
+# but a pairwise score can't see that a second entity fits equally well — the class that
+# produced Richard->Rich Mironov *because Richard Woundy also existed*. A score margin
+# can't catch it here: every confident merge pins to ~0.998, so all near-ties look
+# identical. The planner instead demotes any entity claimed by two merge partners that
+# don't merge with each other (dedup._contested_entities). This flag advertises the gate;
+# the default name_matching scorer omits it and runs ungated.
+CONTESTED_MERGE_GATE = True
 
 # A full-name spelling variant clears this Jaro-Winkler bar and merges; a pair below it
 # lands in the review band. Pinned to name_matching.AUTO_MERGE_THRESHOLD (0.92), NOT
