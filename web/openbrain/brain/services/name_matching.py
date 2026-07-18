@@ -60,6 +60,12 @@ CONTAINMENT_SCORE = 0.86
 REUSE_THRESHOLD = 0.85
 DISAMBIGUATE_THRESHOLD = 0.55
 
+# Batch queue floor: the score at/above which the dedup planner keeps a non-merge pair
+# for human review (below it, blocking noise is dropped, #27). Part of the scorer-seam
+# contract — every scorer module advertises AUTO_MERGE_THRESHOLD + QUEUE_THRESHOLD so the
+# planner can swap scorers (#31). Here it is the disambiguate floor.
+QUEUE_THRESHOLD = DISAMBIGUATE_THRESHOLD
+
 
 def recommend_action(trgm_score: float) -> str:
     """Band a top trgm_score into 'reuse' / 'disambiguate' / 'create' (#8).
