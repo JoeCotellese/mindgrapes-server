@@ -1,6 +1,7 @@
 # ABOUTME: Unit tests for the pure batch dedup planner (#16): blocking discovery,
 # ABOUTME: verification-gated merge/queue split, and the abbreviation uniqueness guard.
 
+from openbrain.brain.services import probabilistic
 from openbrain.brain.services.dedup import (
     MAX_QUEUE_PER_ENTITY,
     _candidate_pairs,
@@ -181,6 +182,51 @@ def test_plan_still_queues_identical_person_names():
     plan = plan_dedup(ents)
     assert plan["merges"] == []
     assert [(a, b) for a, b, _ in plan["queue"]] == [("k1", "k2")]
+
+
+# --- margin-over-runner-up gate (#31 phase 2) ----------------------------------
+
+
+def test_plan_queues_near_tie_merge_candidates_rather_than_guessing():
+    # One entity strongly matches two distinct full-name variants at nearly the same
+    # score. A pairwise scorer would merge both in isolation; the runner-up margin gate
+    # sees the near-tie and demotes to the queue — the Richard->{Mironov,Woundy} class.
+    ents = [
+        _e("x", "person", "Jon Smith"),
+        _e("a", "person", "John Smith"),
+        _e("b", "person", "Jon Smithe"),
+    ]
+    plan = plan_dedup(ents, scorer=probabilistic)
+    assert plan["merges"] == []
+    queued = {frozenset((a, b)) for a, b, _ in plan["queue"]}
+    assert frozenset(("x", "a")) in queued
+    assert frozenset(("x", "b")) in queued
+
+
+def test_plan_merges_clear_winner_over_distant_runner_up():
+    # The runner-up (a shared given name, review-band score) is well below the merge
+    # bar, so it never competes — the single merge candidate still auto-merges.
+    ents = [
+        _e("x", "person", "Jon Smith"),
+        _e("a", "person", "John Smith"),  # full-name variant — merge candidate
+        _e("c", "person", "Jon Baker"),  # shares only "jon" — review band, not a merge
+    ]
+    plan = plan_dedup(ents, scorer=probabilistic)
+    assert len(plan["merges"]) == 1
+    loser, winner, _ = plan["merges"][0]
+    assert {loser, winner} == {"x", "a"}
+
+
+def test_plan_single_merge_candidate_unaffected_by_gate():
+    # Regression: with exactly one merge candidate the gate has no runner-up to
+    # compare against and must not demote the merge.
+    ents = [
+        _e("a", "person", "Jon Smith"),
+        _e("b", "person", "John Smith"),
+    ]
+    plan = plan_dedup(ents, scorer=probabilistic)
+    assert len(plan["merges"]) == 1
+    assert plan["queue"] == []
 
 
 def test_queue_cap_bounds_per_entity_fanout():
