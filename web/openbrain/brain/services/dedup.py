@@ -28,23 +28,11 @@ import random
 from collections import defaultdict
 from itertools import combinations
 
-from openbrain.brain.services.name_matching import (
-    AUTO_MERGE_THRESHOLD,
-    DISAMBIGUATE_THRESHOLD,
-    _is_abbreviation,
-    _name_forms,
-    match_score,
-)
+from openbrain.brain.services import name_matching
+from openbrain.brain.services.name_matching import _is_abbreviation, _name_forms
 
 _PERSON = "person"
 _MIN_TOKEN_LEN = 3
-
-# Queue floor: only pairs with real verification signal reach the review queue.
-# Blocking is recall-first, so most surfaced pairs score 0.0 — unfloored, the
-# first live run queued 155k rows against 5.2k entities (#27). Identical-name
-# person pairs are the one exception (see plan_dedup): they score 0.0 by design
-# yet are exactly the call a human should make.
-QUEUE_THRESHOLD = DISAMBIGUATE_THRESHOLD
 
 # Backstop: one polluted hub entity must not fan out unbounded review rows (#27).
 MAX_QUEUE_PER_ENTITY = 5
@@ -186,8 +174,12 @@ def _pick_winner(a: dict, b: dict) -> tuple[dict, dict]:
     return (a, b) if key_a >= key_b else (b, a)
 
 
-def plan_dedup(entities: list[dict]) -> dict:
+def plan_dedup(entities: list[dict], scorer=name_matching) -> dict:
     """Plan auto-merges and queued pairs for a set of entities.
+
+    `scorer` is a match-scoring module exposing match_score + AUTO_MERGE_THRESHOLD +
+    QUEUE_THRESHOLD; it defaults to the current name_matching seam. Passing the
+    probabilistic scorer swaps the decision policy without touching blocking (#31).
 
     Each entity is {id, kind, canonical_name, aliases}. Returns
     {merges: [(loser_id, winner_id, score)], queue: [(a_id, b_id, score)]}
@@ -204,7 +196,7 @@ def plan_dedup(entities: list[dict]) -> dict:
     for pair in _candidate_pairs(entities):
         a_id, b_id = sorted(pair)
         a, b = by_id[a_id], by_id[b_id]
-        score = match_score(
+        score = scorer.match_score(
             a["kind"],
             a["canonical_name"],
             a.get("aliases"),
@@ -212,7 +204,7 @@ def plan_dedup(entities: list[dict]) -> dict:
             b["canonical_name"],
             b.get("aliases"),
         )
-        if score >= AUTO_MERGE_THRESHOLD:
+        if score >= scorer.AUTO_MERGE_THRESHOLD:
             subset_id = _abbreviation_subset(a, b)
             if subset_id is not None:
                 winner = b if subset_id == a_id else a
@@ -220,7 +212,12 @@ def plan_dedup(entities: list[dict]) -> dict:
             else:
                 winner, loser = _pick_winner(a, b)
             merges.append((loser["id"], winner["id"], score, subset_id))
-        elif score >= QUEUE_THRESHOLD or _identical_person_forms(a, b):
+        # Queue floor: only pairs with real verification signal reach the review
+        # queue. Blocking is recall-first, so most surfaced pairs score 0.0 —
+        # unfloored, the first live run queued 155k rows against 5.2k entities
+        # (#27). Identical-name person pairs are the one exception: they score 0.0
+        # by design yet are exactly the call a human should make.
+        elif score >= scorer.QUEUE_THRESHOLD or _identical_person_forms(a, b):
             queue.append((a_id, b_id, score))
 
     # Uniqueness guard: an abbreviation that fits more than one full name is

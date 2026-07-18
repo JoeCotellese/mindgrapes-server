@@ -26,10 +26,15 @@ import json
 from django.core.management.base import BaseCommand
 from django.db import connection, transaction
 
+from openbrain.brain.services import name_matching, probabilistic
 from openbrain.brain.services.dedup import plan_dedup
 from openbrain.brain.services.entities import merge_entities
 
 _KINDS = ("person", "org", "event", "place", "concept")
+
+# Scorer seam (#31): 'default' is the current name_matching decision, 'fs' is the
+# probabilistic Fellegi-Sunter scorer. Blocking is scorer-independent either way.
+_SCORERS = {"default": name_matching, "fs": probabilistic}
 
 _LOAD_SQL = """
     select id::text as id, kind::text as kind, canonical_name, aliases
@@ -51,7 +56,9 @@ _INSERT_CANDIDATE_SQL = """
 
 
 class Command(BaseCommand):
-    help = "Scan brain.entities for duplicate pairs; auto-merge or queue them (dev only)."
+    help = (
+        "Scan brain.entities for duplicate pairs; auto-merge or queue them (dev only)."
+    )
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -65,21 +72,31 @@ class Command(BaseCommand):
             action="store_true",
             help="Execute the plan (merges + queue writes). Default is dry-run.",
         )
+        parser.add_argument(
+            "--scorer",
+            choices=tuple(_SCORERS),
+            default="default",
+            help="Match scorer: 'default' (name_matching) or 'fs' (probabilistic, #31).",
+        )
 
     def handle(self, *args, **options):
         kind = options["kind"]
         with connection.cursor() as cursor:
             cursor.execute(_LOAD_SQL, [kind, kind])
             columns = [c[0] for c in cursor.description]
-            entities = [dict(zip(columns, row, strict=True)) for row in cursor.fetchall()]
+            entities = [
+                dict(zip(columns, row, strict=True)) for row in cursor.fetchall()
+            ]
 
-        plan = plan_dedup(entities)
+        scorer = _SCORERS[options["scorer"]]
+        plan = plan_dedup(entities, scorer=scorer)
         merges, queue = plan["merges"], plan["queue"]
         by_id = {e["id"]: e for e in entities}
 
         self.stdout.write(
             f"Scanned {len(entities)} live entit(y/ies)"
             + (f" of kind '{kind}'" if kind else "")
+            + f" [scorer={options['scorer']}]"
             + f": {len(merges)} auto-merge candidate(s), {len(queue)} to queue."
         )
         for loser_id, winner_id, score in merges:
