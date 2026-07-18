@@ -22,6 +22,7 @@ import pytest
 from django.db import connection
 from joserfc.jwk import OKPKey
 
+from openbrain.brain.extraction.openrouter_json import OpenRouterJSONError
 from openbrain.oauth import jwt as oauth_jwt
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("brain_write_txn")]
@@ -116,3 +117,14 @@ def test_empty_text_still_stores_best_effort(client):
     resp = _post(client, {"url": url, "title": "t", "text": ""}, _bearer(_token()))
     assert resp.status_code == 200, resp.content
     assert _row(url) is not None
+
+
+def test_summary_service_down_is_502_and_writes_nothing(client, monkeypatch):
+    def _boom(_title, _text):
+        raise OpenRouterJSONError("openrouter unavailable")
+
+    monkeypatch.setattr("openbrain.core.views._summarize", _boom)
+    url = f"https://example.test/{uuid.uuid4().hex}"
+    resp = _post(client, {"url": url, "title": "t", "text": "y"}, _bearer(_token()))
+    assert resp.status_code == 502
+    assert _row(url) is None

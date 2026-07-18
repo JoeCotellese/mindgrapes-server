@@ -17,7 +17,11 @@ from joserfc import jwt
 from joserfc.errors import JoseError, SecurityWarning
 from joserfc.jwk import KeySet
 
-from openbrain.brain.extraction.openrouter_json import call_openrouter_json
+from openbrain.brain.embeddings import EmbeddingError
+from openbrain.brain.extraction.openrouter_json import (
+    OpenRouterJSONError,
+    call_openrouter_json,
+)
 from openbrain.brain.services import captures
 from openbrain.oauth.cors import cors
 from openbrain.oauth.jwt import ALG, public_jwk
@@ -90,7 +94,7 @@ def _summarize(title: str, text: str) -> str:
             "role": "system",
             "content": (
                 "Summarize the web page in a single concise paragraph so it can "
-                "be recalled later. Respond as JSON: {\"summary\": ...}."
+                'be recalled later. Respond as JSON: {"summary": ...}.'
             ),
         },
         {"role": "user", "content": f"Title: {title}\n\n{excerpt}"},
@@ -130,15 +134,18 @@ def capture_api(request):
         return JsonResponse({"error": "url required"}, status=400)
 
     title = payload.get("title") or ""
-    # Fall back to title/URL so an empty summary never blocks the bookmark.
-    summary = _summarize(title, payload.get("text") or "") or title or url
-    result = captures.capture(
-        content=summary,
-        owner=sub,
-        account_id=settings.BRAIN_HOUSEHOLD_ACCOUNT_ID,
-        source_kind="imported",
-        source_ref=url,
-    )
-    return JsonResponse(
-        {"experience_id": result["experience_id"], "summary": summary}
-    )
+    try:
+        # Fall back to title/URL so an empty summary never blocks the bookmark.
+        summary = _summarize(title, payload.get("text") or "") or title or url
+        result = captures.capture(
+            content=summary,
+            owner=sub,
+            account_id=settings.BRAIN_HOUSEHOLD_ACCOUNT_ID,
+            source_kind="imported",
+            source_ref=url,
+        )
+    except (OpenRouterJSONError, EmbeddingError):
+        # OpenRouter (summary or embedding) is down — tell the extension so it
+        # can surface a retry, rather than leaking a 500 HTML page.
+        return JsonResponse({"error": "summary service unavailable"}, status=502)
+    return JsonResponse({"experience_id": result["experience_id"], "summary": summary})
