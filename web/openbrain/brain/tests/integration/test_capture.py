@@ -112,6 +112,15 @@ def test_structured_capture_new_participant_creates_entity_and_mention():
     assert result["metadata"]["source_ref"] == "gdrive:abc"
 
     eid = result["experience_id"]
+    # #37: a caller that names no client is MCP. Guards the structured path's
+    # default, which only the row metadata records.
+    assert (
+        _scalar(
+            "select metadata->>'source' from brain.experiences where id=%s::uuid",
+            [eid],
+        )
+        == "mcp"
+    )
     assert (
         _scalar(
             "select count(*) from brain.mentions "

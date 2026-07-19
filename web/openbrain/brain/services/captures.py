@@ -73,6 +73,7 @@ def capture(
     predicate_hints: list[dict] | None = None,
     source_kind: str | None = None,
     source_ref: str | None = None,
+    client: str = "mcp",
 ) -> dict:
     """Write one experience and return the capture_thought structuredContent dict.
 
@@ -81,6 +82,10 @@ def capture(
     source_ref) skips metadata extraction and resolves participants to entities.
     The embedding (and bare-path metadata) is computed BEFORE the transaction, so
     an OpenRouter failure aborts with no partial write.
+
+    `client` names who wrote the row and lands in metadata.source — a different
+    axis from source_kind, which says how the content was acquired. Callers are
+    trusted server-side entry points, never a value a remote client supplies.
     """
     if is_structured_capture(
         occurred_at, participants, predicate_hints, source_kind, source_ref
@@ -95,16 +100,21 @@ def capture(
             predicate_hints=predicate_hints,
             source_kind=source_kind,
             source_ref=source_ref,
+            client=client,
         )
     return _bare_capture(
-        content=content, owner=owner, account_id=account_id, visibility=visibility
+        content=content,
+        owner=owner,
+        account_id=account_id,
+        visibility=visibility,
+        client=client,
     )
 
 
-def _bare_capture(*, content, owner, account_id, visibility) -> dict:
+def _bare_capture(*, content, owner, account_id, visibility, client) -> dict:
     embedding_lit = to_vector_literal(embed_query(content))
     metadata = import_string(settings.BRAIN_METADATA_FN)(content)
-    full_metadata = {**metadata, "source": "mcp"}
+    full_metadata = {**metadata, "source": client}
 
     with transaction.atomic(), brain_cursor() as cursor:
         cursor.execute(
@@ -141,6 +151,7 @@ def _structured_capture(
     predicate_hints,
     source_kind,
     source_ref,
+    client,
 ) -> dict:
     parts = participants or []
     hints = predicate_hints or []
@@ -150,7 +161,7 @@ def _structured_capture(
 
     # Row metadata: predicate_hints stashed only when non-empty so
     # the consolidation worker can use them as anchors.
-    row_metadata: dict = {"source": "mcp", "people": people_names}
+    row_metadata: dict = {"source": client, "people": people_names}
     if hints:
         row_metadata["predicate_hints"] = hints
 

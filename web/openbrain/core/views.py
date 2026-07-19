@@ -147,6 +147,7 @@ def capture_api(request):
             account_id=settings.BRAIN_HOUSEHOLD_ACCOUNT_ID,
             source_kind="imported",
             source_ref=url,
+            client="browser_extension",
         )
     except (OpenRouterJSONError, EmbeddingError):
         # OpenRouter (summary or embedding) is down — tell the extension so it

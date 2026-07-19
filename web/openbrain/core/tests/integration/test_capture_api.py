@@ -73,8 +73,8 @@ def _post(client, payload, headers):
 def _row(source_ref):
     with connection.cursor() as cur:
         cur.execute(
-            "select content, source_kind::text from brain.experiences "
-            "where source_ref = %s",
+            "select content, source_kind::text, metadata->>'source' "
+            "from brain.experiences where source_ref = %s",
             [source_ref],
         )
         return cur.fetchone()
@@ -94,9 +94,12 @@ def test_bookmarking_the_article_stores_an_imported_experience(client):
 
     row = _row(ARTICLE)
     assert row is not None
-    content, source_kind = row
+    content, source_kind, source = row
     assert source_kind == "imported"
     assert content  # non-empty summary stored
+    # #37: the writing client, not the transport MCP happens to use. source_kind
+    # (how it was acquired) and this (who wrote it) are separate axes.
+    assert source == "browser_extension"
 
 
 def test_missing_bearer_is_unauthorized_and_writes_nothing(client):
