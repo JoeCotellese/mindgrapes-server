@@ -11,4 +11,6 @@ from . import views
 
 urlpatterns = [
     path("healthz", views.health, name="health"),
+    # Bearer-authed bookmark endpoint for the Mind Grapes browser extension (#35).
+    path("capture", views.capture_api, name="capture"),
 ]
