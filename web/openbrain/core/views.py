@@ -59,7 +59,8 @@ def _verify_bearer(request) -> str | None:
     JWKS fetch. Returns None on any failure so the caller emits a 401.
     """
     scheme, _, token = request.META.get("HTTP_AUTHORIZATION", "").partition(" ")
-    if scheme != "Bearer" or not token:
+    # RFC 6750: the Bearer auth scheme is case-insensitive.
+    if scheme.lower() != "bearer" or not token:
         return None
     try:
         key_set = KeySet.import_key_set({"keys": [public_jwk()]})
@@ -128,6 +129,9 @@ def capture_api(request):
     try:
         payload = json.loads(request.body or b"{}")
     except (ValueError, TypeError):
+        return JsonResponse({"error": "invalid json"}, status=400)
+    if not isinstance(payload, dict):
+        # Valid JSON but not an object (a list/scalar body) — .get would crash.
         return JsonResponse({"error": "invalid json"}, status=400)
     url = (payload.get("url") or "").strip()
     if not url:

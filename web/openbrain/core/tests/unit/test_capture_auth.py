@@ -50,6 +50,13 @@ def test_missing_header_returns_none():
     assert _verify_bearer(_request()) is None
 
 
+def test_bearer_scheme_is_case_insensitive():
+    # RFC 6750: the Bearer scheme is case-insensitive.
+    user = User.objects.create_user(email="e@example.net")
+    token = oauth_jwt.sign_access_token(user)
+    assert _verify_bearer(_request(f"bearer {token}")) == str(user.pk)
+
+
 def test_non_bearer_scheme_returns_none():
     user = User.objects.create_user(email="b@example.net")
     token = oauth_jwt.sign_access_token(user)

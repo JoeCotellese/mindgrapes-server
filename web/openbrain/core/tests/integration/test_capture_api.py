@@ -106,6 +106,12 @@ def test_missing_bearer_is_unauthorized_and_writes_nothing(client):
     assert _row(url) is None
 
 
+def test_non_dict_json_body_is_400(client):
+    # Valid JSON but not an object must not crash the .get() path.
+    resp = _post(client, [], _bearer(_token()))
+    assert resp.status_code == 400
+
+
 def test_options_preflight_answers_with_cors(client):
     resp = client.options("/capture")
     assert resp.status_code == 204
