@@ -81,7 +81,8 @@ projection or an external app is the right escalation — is in
   background via OpenRouter
 - **Caddy + Tailscale**: TLS at the edge; reachable on your tailnet plus a
   public `*.ts.net` Funnel URL for clients that can't join it — no public VM,
-  no DNS, no Let's Encrypt
+  no DNS, no Let's Encrypt. Prefer your own domain? A public host with Caddy
+  ACME is a supported path too (see [`docs/deploy.md`](docs/deploy.md))
 - **Backups**: `pg_dump` + restic, encrypted offsite (e.g. Backblaze B2)
 
 Mutations are append-mostly: edits and deletes flow through a supersede +
@@ -109,9 +110,10 @@ docker compose exec web python manage.py bootstrap_admin you@example.com
 Then open `https://localhost` (self-signed dev cert), enroll your passkey,
 and paste the MCP URL from the `/connect` page into your AI client.
 
-Production deployment — an always-on box behind Tailscale, with Funnel for
-off-tailnet clients — is documented in [`docs/deploy.md`](docs/deploy.md),
-including backups and the schema-migration boot gate.
+Production deployment — an always-on box, reachable over your tailnet, via
+Tailscale Funnel for off-tailnet clients, or on your own public domain — is
+documented in [`docs/deploy.md`](docs/deploy.md), including how to choose an
+exposure path, backups, and the schema-migration boot gate.
 
 For hacking on the code (isolated dev stack, test suites), see
 [CONTRIBUTING.md](CONTRIBUTING.md).

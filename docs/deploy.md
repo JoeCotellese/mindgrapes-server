@@ -121,6 +121,46 @@ docker compose -f docker-compose.dev.yml down -v        # tear down dev
 docker volume ls | grep pgdata                          # only openbrain_pgdata remains
 ```
 
+## Choosing an exposure path
+
+The brain has to be reachable by whatever AI client you use. Nothing in the
+design ties that reachability to Tailscale — the app is hostname-agnostic
+(`ALLOWED_HOSTS`, `OAUTH_ISSUER`, and `BRAIN_MCP_URL` are all env-driven) and
+Caddy can terminate TLS itself. Tailscale Funnel is the *default recipe*, not
+a hard dependency. Pick by where the client runs:
+
+| Path | Reachable by | TLS | Public DNS / firewall hole |
+| --- | --- | --- | --- |
+| **Tailnet-direct** | clients on your tailnet only | tailscale sidecar | none |
+| **Tailscale Funnel** | anyone, incl. claude.ai web | tailscale (`*.ts.net`) | none |
+| **Public host** | anyone, incl. claude.ai web | Caddy ACME (Let's Encrypt) | yes — you run it |
+
+- **Tailnet-direct** — the client machine is on your tailnet (e.g. Claude
+  Desktop on your own laptop). It reaches the brain by tailnet hostname; the
+  tailscale sidecar terminates TLS and forwards plain HTTP to Caddy `:80`. No
+  Funnel, no public exposure. **claude.ai web can never use this** — it runs in
+  Anthropic's cloud, off your tailnet.
+- **Tailscale Funnel** — the `*.ts.net` hostname is publicly reachable with a
+  Tailscale-issued cert, no public VM or DNS record of your own. This is what
+  off-tailnet clients (claude.ai web) and the OAuth callback use. The default,
+  documented in full below.
+- **Public host** — a real domain pointed at a box you expose on 80/443, with
+  Caddy fetching a Let's Encrypt cert. More surface area and it's your DNS +
+  firewall to run, but it's a first-class supported path (see *Public host*
+  below).
+
+Whichever you pick, `OAUTH_ISSUER` and `BRAIN_MCP_URL` **must be the exact
+hostname the client connects to** — the OAuth redirect bounces through the
+browser back to that URL, so mixing a tailnet hostname with a Funnel or public
+hostname breaks the auth handshake.
+
+> Other tunnels work too. A Cloudflare Tunnel (or any reverse proxy that
+> terminates TLS and forwards to Caddy `:80` with `X-Forwarded-Proto: https`)
+> is functionally the *Public host* path with someone else's edge — set the
+> hostname env vars to the tunnel's public hostname and skip Caddy's own ACME.
+> Not documented here; the config seam is the same, and it's left as an
+> exercise for the reader.
+
 ## Production (an always-on host behind Tailscale)
 
 Production runs on a small always-on machine on your home network — a Mac
@@ -239,6 +279,62 @@ enforcement lives in the mcp service; security headers come from Django
 middleware on the human paths (the /mcp header gap is tracked in #129). Funnel
 makes the `*.ts.net` URL publicly reachable — required for clients that aren't
 on the tailnet (e.g. claude.ai web).
+
+### Public host (your own DNS + Let's Encrypt)
+
+If you'd rather expose the brain on a real domain than a `*.ts.net` Funnel URL,
+the app supports it with no code changes — Caddy already knows how to fetch a
+Let's Encrypt cert. The `{$BRAIN_HOSTNAME}` block in `caddy/Caddyfile` self-signs
+for `localhost` dev, but a real public hostname there triggers ACME automatically.
+
+The tradeoff versus Funnel: you run the DNS record and the inbound 80/443
+firewall hole yourself, and the box is directly on the public internet rather
+than behind Tailscale's edge. In exchange you get a hostname you control.
+
+Differences from the Tailscale recipe above:
+
+- **Don't** run the tailscale profile — this path doesn't use the sidecar. Bring
+  up only `docker compose up -d --build`, and make sure Caddy's `443` (and `80`
+  for the ACME challenge) are published to the host and reachable from the
+  internet.
+- Point a public **DNS A/AAAA record** at the host, and open **80 + 443** inbound.
+  Port 80 must be reachable for the HTTP-01 ACME challenge.
+- Set the hostname env vars to your real domain (Caddy binds its TLS edge to
+  `BRAIN_HOSTNAME`, so it must be the public name, not `localhost`):
+
+  ```sh
+  #   BRAIN_HOSTNAME=brain.example.com          # Caddy's ACME edge binds here
+  #   ALLOWED_HOSTS=brain.example.com           # Django host validation
+  #   OAUTH_ISSUER=https://brain.example.com
+  #   BRAIN_MCP_URL=https://brain.example.com/mcp
+  #   SECURE_HSTS_SECONDS=15552000
+  #   ... plus the same SECRET_KEY / OAUTH_* / POSTGRES_* block as the Tailscale recipe
+  ```
+
+  (No `TS_AUTHKEY` / `TS_HOSTNAME` — those are Tailscale-only.)
+
+- Caddy fetches and renews the cert on its own; there's no Let's Encrypt step to
+  run by hand. Verify:
+
+  ```sh
+  curl -I https://brain.example.com/healthz
+  # Expect: HTTP/2 200 + strict-transport-security / x-frame-options / nosniff
+  ```
+
+Everything downstream — the OAuth authorization server, open DCR, the /mcp
+path-split, the client-registration flow below — is hostname-agnostic and works
+identically on a public host.
+
+Two things matter *more* on the open internet than behind a Funnel, and both are
+already tracked as open items rather than surprises:
+
+- **DCR (`/oauth/register`) is open by design.** Behind Funnel that's low-risk;
+  on a public domain it's a spam / anonymous-row-creation target. Registrations
+  are inert without a passkey login, but the durable fix (gate + rate-limit +
+  table hygiene) is #79.
+- **`/mcp` + `/health` don't set app-layer security headers yet** (#129). Django
+  paths do, so HSTS still reaches browsers domain-wide; the gap is on the MCP
+  paths specifically.
 
 ### Registering a client in production
 
