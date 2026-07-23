@@ -3,6 +3,7 @@
 
 import base64
 import io
+import os
 
 import pytest
 from PIL import Image
@@ -13,11 +14,23 @@ from openbrain.brain.services import blobstore, image_captures
 _MOD = "openbrain.brain.services.image_captures"
 
 
-def _png_b64(width=800, height=600) -> str:
+def _png_bytes(width=800, height=600) -> bytes:
     img = Image.new("RGB", (width, height), (10, 120, 200))
     buf = io.BytesIO()
     img.save(buf, format="PNG")
-    return base64.b64encode(buf.getvalue()).decode("ascii")
+    return buf.getvalue()
+
+
+def _png_b64(width=800, height=600) -> str:
+    return base64.b64encode(_png_bytes(width, height)).decode("ascii")
+
+
+def _noisy_png_bytes(width=800, height=600) -> bytes:
+    """A PNG that does NOT compress away — a stand-in for a real photo's bulk."""
+    img = Image.frombytes("RGB", (width, height), os.urandom(width * height * 3))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
 
 
 @pytest.fixture
@@ -116,6 +129,42 @@ def test_requires_exactly_one_intake(wired):
         _call(image_base64=None, object_key=None)
     with pytest.raises(image_captures.ImagePayloadError):
         _call(image_base64=_png_b64(), object_key="household/x.webp")
+    with pytest.raises(image_captures.ImagePayloadError):
+        _call(image_base64=_png_b64(), image_bytes=_png_bytes())
+
+
+# Raw-bytes intake — the multipart app door (POST /capture/image). Same engine as
+# the base64 door, without the base64 ceiling: the view enforces the byte ceiling
+# before this is ever reached.
+
+
+def test_image_bytes_intake_stores_a_blob_and_embeds_the_description(wired):
+    result = _call(image_base64=None, image_bytes=_png_bytes(),
+                   description="A photo of the whiteboard")
+    assert wired["content"] == "A photo of the whiteboard"
+    assert wired["source_ref"].startswith("attachment:")
+    store = blobstore.MemoryBlobstore(bucket="test-bucket")
+    assert store.head(result["object_key"]) is not None
+
+
+def test_image_bytes_accepts_a_payload_past_the_base64_ceiling(wired):
+    # The whole point of the multipart door: a real photo, far past the 256KB
+    # base64 ceiling that guards the MCP path.
+    raw = _noisy_png_bytes()
+    assert len(raw) > image_captures.MAX_BASE64_CHARS
+    result = _call(image_base64=None, image_bytes=raw, description="big photo")
+    assert result["byte_len"] > 0
+
+
+def test_image_bytes_hard_ceiling_rejects_oversize(wired):
+    huge = b"\x89PNG" + b"0" * image_captures.MAX_IMAGE_BYTES
+    with pytest.raises(image_captures.ImagePayloadError):
+        _call(image_base64=None, image_bytes=huge)
+
+
+def test_image_bytes_non_image_raises_decode_error(wired):
+    with pytest.raises(ImageDecodeError):
+        _call(image_base64=None, image_bytes=b"definitely not an image")
 
 
 def test_non_image_bytes_raise_decode_error(wired):

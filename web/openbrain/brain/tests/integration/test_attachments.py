@@ -6,11 +6,12 @@ brain.attachments tables, the refcounted dedup, the get_experience attachment
 block, supersede carry-forward, event/place linking, and the orphan-detection
 reconciliation. Every write runs inside brain_write_txn and is rolled back.
 
-The blobstore here is the in-memory fake (BLOBSTORE_BACKEND defaults to 'memory'),
-so this file validates the DATABASE substrate. The real minio round-trip — a
-presigned HTTP GET returning the exact bytes and an expired URL 403ing — is NOT
-covered because the dev stack has no minio service yet; that is a documented
-follow-up (add a minio sidecar + an s3-backend contract test).
+This file validates the DATABASE substrate: it drives whichever blobstore backend
+is configured (the in-memory fake by default, minio in the dev stack) but asserts
+on rows, not on bytes over HTTP. The real minio round-trip — a presigned HTTP GET
+returning the exact bytes, an expired URL 403ing, and a URL signed for the wrong
+host 403ing — lives in test_blobstore_s3.py, against the dev stack's minio
+service.
 """
 
 import base64
@@ -42,8 +43,18 @@ def _embed(text):
 
 @pytest.fixture(autouse=True)
 def _clear_memory_store():
+    # Sweep the configured store too: brain_write_txn rolls back the blob ROWS
+    # but nothing rolls back an object PUT, so against minio every object these
+    # tests store would otherwise linger in the shared dev bucket.
+    store = blobstore.get_blobstore()
+    before = set(store.list_keys())
     blobstore._MEMORY_STORE.clear()
     yield
+    for key in set(store.list_keys()) - before:
+        try:
+            store.delete(key)
+        except Exception:
+            pass
     blobstore._MEMORY_STORE.clear()
 
 

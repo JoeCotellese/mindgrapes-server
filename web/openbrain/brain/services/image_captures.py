@@ -42,6 +42,12 @@ from openbrain.brain.vision import describe as vision_describe
 # body-limit) rejects oversize bodies BEFORE JSON parse; this is the belt-and-
 # suspenders check after decode-side arrival.
 MAX_BASE64_CHARS = 256 * 1024
+
+# The multipart door (POST /capture/image) hands over raw bytes, so it carries
+# real photos rather than pasted screenshots. The view is the authoritative gate
+# (settings.MAX_IMAGE_UPLOAD_BYTES, checked before the bytes are ever read); this
+# is the service-side backstop so no caller can hand Pillow an unbounded buffer.
+MAX_IMAGE_BYTES = 16 * 1024 * 1024
 MAX_METADATA_BYTES = 16 * 1024
 MAX_METADATA_DEPTH = 6
 
@@ -87,19 +93,48 @@ class _Blob:
     exif_when: str | None = None
 
 
-def _prepare_blob(*, store, account_id, image_base64, object_key,
-                  original_sha256, mime, width, height) -> _Blob:
-    """Resolve the intake (inline base64 vs already-uploaded object_key) to a _Blob.
+def _blob_from_raw(account_id: str, raw: bytes) -> _Blob:
+    """Decode/re-encode caller-supplied bytes into the stored-ready _Blob."""
+    p = process_image(raw)  # raises ImageDecodeError on non-image
+    return _Blob(
+        key=blobstore_mod.content_key(account_id, p.original_sha256, ext="webp"),
+        derivative=p.derivative,
+        derivative_sha=p.derivative_sha256,
+        orig_sha=p.original_sha256,
+        mime=p.mime,
+        width=p.width,
+        height=p.height,
+        byte_len=len(p.derivative),
+        exif_lat=p.exif_lat,
+        exif_lng=p.exif_lng,
+        exif_when=p.exif_occurred_at,
+    )
 
-    Exactly one intake must be supplied; the inline path decodes/re-encodes here,
-    the object_key path HEADs the already-uploaded derivative for its byte_len.
+
+def _prepare_blob(*, store, account_id, image_base64, image_bytes, object_key,
+                  original_sha256, mime, width, height) -> _Blob:
+    """Resolve the intake to a _Blob. Three doors, one engine.
+
+    Exactly one intake must be supplied: inline base64 (small MCP screenshots),
+    raw bytes (the multipart app POST), or an object_key the app already PUT via
+    a presigned URL. The two byte-carrying doors decode/re-encode here; the
+    object_key path HEADs the already-uploaded derivative for its byte_len.
     """
-    if bool(image_base64) == bool(object_key):
+    supplied = [bool(image_base64), bool(image_bytes), bool(object_key)]
+    if sum(supplied) != 1:
         raise ImagePayloadError(
-            "supply exactly one of image_base64 or object_key (+original_sha256/mime/dims)"
+            "supply exactly one of image_base64, image_bytes, or object_key "
+            "(+original_sha256/mime/dims)"
         )
 
-    if image_base64 is not None:
+    if image_bytes:
+        if len(image_bytes) > MAX_IMAGE_BYTES:
+            raise ImagePayloadError(
+                f"image too large ({len(image_bytes)} bytes > {MAX_IMAGE_BYTES})"
+            )
+        return _blob_from_raw(account_id, image_bytes)
+
+    if image_base64:
         import base64
 
         if len(image_base64) > MAX_BASE64_CHARS:
@@ -111,21 +146,7 @@ def _prepare_blob(*, store, account_id, image_base64, object_key,
             raw = base64.b64decode(image_base64, validate=True)
         except Exception as exc:
             raise ImagePayloadError(f"image is not valid base64: {exc}") from exc
-
-        p = process_image(raw)  # raises ImageDecodeError on non-image
-        return _Blob(
-            key=blobstore_mod.content_key(account_id, p.original_sha256, ext="webp"),
-            derivative=p.derivative,
-            derivative_sha=p.derivative_sha256,
-            orig_sha=p.original_sha256,
-            mime=p.mime,
-            width=p.width,
-            height=p.height,
-            byte_len=len(p.derivative),
-            exif_lat=p.exif_lat,
-            exif_lng=p.exif_lng,
-            exif_when=p.exif_occurred_at,
-        )
+        return _blob_from_raw(account_id, raw)
 
     if not (original_sha256 and mime):
         raise ImagePayloadError("object_key path requires original_sha256 and mime")
@@ -212,6 +233,7 @@ def capture_image(
     account_id: str,
     visibility: str = "private",
     image_base64: str | None = None,
+    image_bytes: bytes | None = None,
     object_key: str | None = None,
     original_sha256: str | None = None,
     mime: str | None = None,
@@ -228,9 +250,10 @@ def capture_image(
 ) -> dict:
     """Capture an image as a searchable experience backed by a stored blob.
 
-    Two intake shapes: inline `image_base64` (small screenshots, <=256KB base64)
-    which the server decodes/re-encodes/uploads, or the durable app path where the
-    app already PUT the derivative via a presigned URL and passes
+    Three intake shapes: inline `image_base64` (small MCP screenshots, <=256KB
+    base64); `image_bytes`, the raw multipart bytes POST /capture/image hands over
+    after enforcing settings.MAX_IMAGE_UPLOAD_BYTES; or the object_key path where
+    the app already PUT the derivative via a presigned URL and passes
     object_key+original_sha256+mime+width+height. Exactly one must be supplied.
     """
     _validate_metadata(metadata)
@@ -250,6 +273,7 @@ def capture_image(
         store=store,
         account_id=account_id,
         image_base64=image_base64,
+        image_bytes=image_bytes,
         object_key=object_key,
         original_sha256=original_sha256,
         mime=mime,

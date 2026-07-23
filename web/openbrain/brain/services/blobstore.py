@@ -12,6 +12,14 @@ prefix is organizational, never a tenant isolation boundary. `put` passes the
 sha256 of the transferred (derivative) bytes so S3 verifies the upload
 server-side and rejects a truncated/corrupt object; a mismatch raises so no
 attachments row is written for a bad upload.
+
+Endpoints are SPLIT. Server-side operations (put/get/head/delete/list) go to
+S3_ENDPOINT — the compose-network address (http://minio:9000). Presigned URLs are
+minted against S3_PUBLIC_ENDPOINT, the address the *client* will fetch, because
+SigV4 signs the Host header: a URL signed for the internal host 403s
+(SignatureDoesNotMatch) when fetched at the tailnet host. S3_PUBLIC_ENDPOINT
+falls back to S3_ENDPOINT when unset, which is correct for a single-address
+deployment.
 """
 
 import base64
@@ -89,22 +97,38 @@ class MemoryBlobstore:
 
 
 class S3Blobstore:
-    def __init__(self, *, endpoint, bucket, access_key, secret_key, region):
+    def __init__(self, *, endpoint, bucket, access_key, secret_key, region,
+                 public_endpoint=""):
         # Lazy import so the module loads (and the memory backend works) even if
         # boto3 isn't installed in a given environment.
         import boto3
         from botocore.config import Config
 
         self.bucket = bucket
-        self._client = boto3.client(
-            "s3",
-            endpoint_url=endpoint or None,
-            aws_access_key_id=access_key or None,
-            aws_secret_access_key=secret_key or None,
-            region_name=region or None,
-            # Path-style so a minio endpoint works without bucket-name DNS.
-            config=Config(s3={"addressing_style": "path"}),
+        # Path-style so a minio endpoint works without bucket-name DNS. SigV4 is
+        # pinned: against a custom endpoint botocore would otherwise fall back to
+        # SigV2, which minio is deprecating and which put_object's ChecksumSHA256
+        # needs anyway. SigV4 signs the Host header — the reason presigning has to
+        # happen against the public endpoint.
+        config = Config(
+            signature_version="s3v4", s3={"addressing_style": "path"}
         )
+        creds = {
+            "aws_access_key_id": access_key or None,
+            "aws_secret_access_key": secret_key or None,
+            "region_name": region or None,
+            "config": config,
+        }
+        self._client = boto3.client("s3", endpoint_url=endpoint or None, **creds)
+        # A second client bound to the client-reachable address; used ONLY to
+        # mint presigned URLs so the signed Host matches what the client fetches.
+        # Same instance when the two addresses coincide.
+        if public_endpoint and public_endpoint != endpoint:
+            self._presign_client = boto3.client(
+                "s3", endpoint_url=public_endpoint, **creds
+            )
+        else:
+            self._presign_client = self._client
 
     def put(self, key: str, data: bytes, mime: str, *, sha256: str | None = None) -> None:
         kwargs = {
@@ -137,7 +161,8 @@ class S3Blobstore:
         # Short-TTL bearer URL. NEVER log or persist the return value — log the
         # object_key instead (see reads.get_experience_detail). Un-share cannot
         # revoke an already-minted URL (no clawback, per #48); the TTL bounds it.
-        return self._client.generate_presigned_url(
+        # Signed against the PUBLIC endpoint — see the module docstring.
+        return self._presign_client.generate_presigned_url(
             "get_object",
             Params={"Bucket": self.bucket, "Key": key},
             ExpiresIn=ttl,
@@ -163,6 +188,7 @@ def get_blobstore():
     if backend == "s3":
         return S3Blobstore(
             endpoint=getattr(settings, "S3_ENDPOINT", ""),
+            public_endpoint=getattr(settings, "S3_PUBLIC_ENDPOINT", ""),
             bucket=bucket,
             access_key=getattr(settings, "S3_ACCESS_KEY", ""),
             secret_key=getattr(settings, "S3_SECRET_KEY", ""),

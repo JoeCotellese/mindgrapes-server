@@ -42,6 +42,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
     # SECRET_KEY, ALLOWED_HOSTS, CSRF_TRUSTED_ORIGINS, OAUTH_*, EMAIL_*,
     # DEFAULT_FROM_EMAIL, BRAIN_MCP_URL + POSTGRES_* come from .env (see
     # .env.example). DB host/port + settings module are inline; production.py
@@ -53,6 +55,11 @@ services:
       DJANGO_SETTINGS_MODULE: config.settings.production
       PGHOST: postgres
       PGPORT: "5432"
+      # Blobstore topology, not secrets: the in-network address the server
+      # puts/gets through. The keys, bucket, and the tailnet-facing
+      # S3_PUBLIC_ENDPOINT that presigned URLs are signed for come from .env.
+      BLOBSTORE_BACKEND: s3
+      S3_ENDPOINT: http://minio:9000
     healthcheck:
       test:
         - CMD
@@ -75,6 +82,8 @@ services:
         condition: service_healthy
       web:
         condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
     # Secrets/OAuth config (POSTGRES_*, OAUTH_*, BRAIN_MCP_URL, OPENROUTER_API_KEY)
     # come from .env via env_file, same as web. DB host/port + the MCP path are
     # inline; OAUTH_JWKS_URL points at the in-network web service (the AS).
@@ -86,6 +95,10 @@ services:
       PGPORT: "5432"
       OAUTH_JWKS_URL: http://web:8000/oauth/jwks.json
       MCP_PATH: /mcp/
+      # Same blobstore topology as web — capture_image writes through the
+      # identical seam, so both services must agree on the endpoint.
+      BLOBSTORE_BACKEND: s3
+      S3_ENDPOINT: http://minio:9000
     volumes:
       - ./init:/init:ro  # init/NN-*.sql for `brain_ledger migrate` in-container
     entrypoint: ["python", "manage.py"]
@@ -118,11 +131,54 @@ services:
     entrypoint: ["python", "manage.py"]
     command: ["run_consolidation"]
 
+  # Object store for attachment blobs (#42). The official image is multi-arch,
+  # so it runs natively on an Apple Silicon host (Mac mini). Credentials come
+  # from .env — never inline here. The S3 API is NOT published to the host:
+  # Caddy fronts it on :9000 (see caddy/Caddyfile), so the only reach is the
+  # tailnet. Blobs live in their own volume; pg_dump does NOT back them up.
+  minio:
+    image: minio/minio:latest
+    container_name: openbrain-minio
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY}
+    command: server /data --console-address ":9001"
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # One-shot bucket create, then exit 0. web/mcp gate on its successful
+  # completion so a put never races an absent bucket on a fresh volume.
+  minio-init:
+    image: minio/mc:latest
+    container_name: openbrain-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${S3_SECRET_KEY}
+      S3_BUCKET: ${S3_BUCKET:-brain-attachments}
+    entrypoint:
+      - sh
+      - -c
+      - >
+        mc alias set live http://minio:9000 "$${S3_ACCESS_KEY}" "$${S3_SECRET_KEY}" &&
+        mc mb --ignore-existing "live/$${S3_BUCKET}" &&
+        echo "bucket $${S3_BUCKET} ready"
+
   caddy:
     # Public-facing edge (#50). Terminates TLS — locally with a
     # self-signed cert via `tls internal`; in prod auto-fetches a
     # Let's Encrypt cert for ${BRAIN_HOSTNAME}. Reverse-proxies the human/OAuth
     # paths to web and /mcp to the Python mcp service (which it path-splits).
+    # Also fronts minio on :9000 for presigned attachment fetches (tailnet only,
+    # never Funnel — see the attachments site block in caddy/Caddyfile).
     image: caddy:2-alpine
     container_name: openbrain-caddy
     restart: unless-stopped
@@ -131,9 +187,14 @@ services:
         condition: service_healthy
       mcp:
         condition: service_healthy
+      minio:
+        condition: service_healthy
     ports:
       - "80:80"
       - "443:443"
+      # Attachment reads. Bound to the host so the tailnet IP reaches it; the
+      # tailnet is already WireGuard-encrypted. NOT exposed through Funnel.
+      - "${ATTACHMENTS_BIND_ADDR:-0.0.0.0}:9000:9000"
     environment:
       BRAIN_HOSTNAME: ${BRAIN_HOSTNAME:-localhost}
     volumes:
@@ -174,6 +235,7 @@ services:
 
 volumes:
   pgdata:
+  miniodata:  # attachment blobs — backed up SEPARATELY from pg_dump (docs/deploy.md)
   ts-state:
   caddy-data:
   caddy-config:
