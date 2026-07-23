@@ -22,6 +22,15 @@ def _png_bytes(width, height) -> bytes:
     return buf.getvalue()
 
 
+def _pixel_bomb_png(width, height) -> bytes:
+    # A byte-tiny PNG declaring an enormous canvas: the decompression-bomb shape.
+    # A 1-bit blank image compresses to nothing, so the wire-byte ceilings never
+    # see it coming — only a pixel-count check does.
+    buf = io.BytesIO()
+    Image.new("1", (width, height), 0).save(buf, format="PNG")
+    return buf.getvalue()
+
+
 def test_reencode_bounds_max_dim_1024():
     result = images.process_image(_png_bytes(2000, 1500))
     assert result.width <= images.MAX_DIM
@@ -66,6 +75,38 @@ def test_decode_fails_on_truncated_image():
     raw = _png_bytes(400, 300)
     with pytest.raises(images.ImageDecodeError):
         images.process_image(raw[: len(raw) // 2])
+
+
+def test_pixel_bomb_past_pillows_hard_limit_is_a_decode_error():
+    # 225 megapixels: Pillow raises DecompressionBombError, which derives straight
+    # from Exception and would otherwise escape process_image as a 500.
+    raw = _pixel_bomb_png(15000, 15000)
+    assert len(raw) < 1024 * 1024
+    with pytest.raises(images.ImageDecodeError):
+        images.process_image(raw)
+
+
+def test_pixel_bomb_in_pillows_warn_only_band_is_a_decode_error():
+    # 144 megapixels: Pillow only WARNS between MAX_IMAGE_PIXELS and 2x it, and
+    # decodes anyway (~430MB resident on the convert("RGB")).
+    raw = _pixel_bomb_png(12000, 12000)
+    assert len(raw) < 1024 * 1024
+    with pytest.raises(images.ImageDecodeError):
+        images.process_image(raw)
+
+
+def test_pixel_ceiling_rejects_from_the_header_below_pillows_thresholds():
+    # 56 megapixels: under every Pillow threshold, past ours. The byte ceilings
+    # bound compressed bytes; this is the one that bounds the decode.
+    raw = _pixel_bomb_png(8000, 7000)
+    assert 8000 * 7000 > images.MAX_PIXELS
+    with pytest.raises(images.ImageDecodeError, match="pixels"):
+        images.process_image(raw)
+
+
+def test_a_real_phone_photo_clears_the_pixel_ceiling():
+    # 48MP (8064x6048) is today's iPhone full-res; it must still be accepted.
+    assert 8064 * 6048 <= images.MAX_PIXELS
 
 
 def test_animated_gif_takes_first_frame():

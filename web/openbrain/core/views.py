@@ -11,6 +11,7 @@ uses to file a real photo, sharing capture_api's auth and the MCP tool's engine.
 import json
 import math
 import warnings
+from datetime import datetime
 
 from django.conf import settings
 from django.http import HttpResponse, JsonResponse
@@ -197,13 +198,30 @@ def _participants(raw: str) -> list[dict] | None:
             raise ValueError(f"invalid people JSON: {exc}") from exc
         if not isinstance(parsed, list):
             raise ValueError("people must be a JSON list")
-        people = [
-            item if isinstance(item, dict) else {"name": str(item).strip()}
-            for item in parsed
-        ]
+        people = []
+        for item in parsed:
+            person = item if isinstance(item, dict) else {"name": item}
+            name = person.get("name")
+            # The resolver reads p["name"]; a nameless object is a 400, not a
+            # KeyError three layers down.
+            if not isinstance(name, str) or not name.strip():
+                raise ValueError("each person needs a non-empty name")
+            people.append({**person, "name": name.strip()})
     else:
         people = [{"name": name} for name in _string_list(text)]
     return people or None
+
+
+def _occurred_at(raw: str) -> str | None:
+    """An ISO 8601 timestamp, validated before it rides into `%s::timestamptz`."""
+    text = (raw or "").strip()
+    if not text:
+        return None
+    try:
+        datetime.fromisoformat(text)
+    except ValueError as exc:
+        raise ValueError(f"occurred_at must be an ISO 8601 timestamp ({exc})") from exc
+    return text
 
 
 def _location(post) -> dict | None:
@@ -238,7 +256,7 @@ def _image_fields(post) -> dict:
     return {
         "description": (post.get("description") or "").strip() or None,
         "ocr": (post.get("ocr_text") or "").strip() or None,
-        "occurred_at": (post.get("occurred_at") or "").strip() or None,
+        "occurred_at": _occurred_at(post.get("occurred_at") or ""),
         "event": (post.get("event") or "").strip() or None,
         "visibility": visibility,
         "location": _location(post),
@@ -262,9 +280,11 @@ def capture_image_api(request):
     The MCP door takes base64 under a 256KB ceiling (a screenshot pasted into an
     LLM). This one takes multipart, so it carries a full-resolution photo — which
     makes the size ceiling load-bearing rather than advisory: an oversize upload
-    is rejected on `.size` BEFORE the bytes are read or handed to a decoder, so a
-    hostile body can't cost us a Pillow decode. The declared Content-Type is
-    never trusted; a payload is an image only if it decodes as one.
+    is rejected on `.size` BEFORE the bytes are read or handed to a decoder. That
+    bounds wire bytes only, not decode cost — a byte-tiny PNG can declare
+    hundreds of megapixels — so extraction.images.MAX_PIXELS bounds the decode
+    itself from the image header. The declared Content-Type is never trusted; a
+    payload is an image only if it decodes as one.
     """
     if request.method != "POST":
         return JsonResponse({"error": "method not allowed"}, status=405)

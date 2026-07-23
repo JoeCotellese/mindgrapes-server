@@ -15,6 +15,7 @@ silently dropped.
 
 import hashlib
 import io
+import warnings
 
 from PIL import Image, UnidentifiedImageError
 
@@ -41,6 +42,15 @@ DERIVATIVE_MIME = "image/webp"
 SHRINK_FLOOR_BYTES = 64 * 1024
 
 ACCEPTED_FORMATS = "JPEG, PNG, WebP, GIF, HEIC/HEIF, TIFF, BMP"
+
+# Every other ceiling in the stack (Caddy's request_body, MAX_IMAGE_UPLOAD_BYTES,
+# MAX_IMAGE_BYTES) bounds COMPRESSED bytes, which says nothing about what a decode
+# costs: a 17KB 1-bit PNG can declare 144 megapixels and then take ~430MB resident
+# through convert("RGB"). Pillow's own guard is not enough — it only warns between
+# MAX_IMAGE_PIXELS and 2x that, and decodes anyway. So bound pixels ourselves, from
+# the header, before load(). 50MP sits above today's full-res phone cameras (48MP
+# = 8064x6048) and well under Pillow's 89MP warn threshold.
+MAX_PIXELS = 50_000_000
 
 
 class ImageDecodeError(Exception):
@@ -76,11 +86,34 @@ class ProcessedImage:
         self.is_animated = is_animated
 
 
+def _reject_pixel_bomb(img: Image.Image) -> None:
+    """Bound the decode from the header, before load() allocates the pixels."""
+    width, height = img.size
+    if width * height > MAX_PIXELS:
+        raise ImageDecodeError(
+            f"image declares too many pixels to decode ({width}x{height} = "
+            f"{width * height} pixels > {MAX_PIXELS})"
+        )
+
+
 def _decode(raw: bytes) -> Image.Image:
     try:
-        img = Image.open(io.BytesIO(raw))
-        img.load()  # force decode so truncated/corrupt bytes fail here, not later
-    except (UnidentifiedImageError, OSError, ValueError, SyntaxError) as exc:
+        with warnings.catch_warnings():
+            # Pillow's bomb guard raises above 2x MAX_IMAGE_PIXELS but only WARNS
+            # below it; promote the warning so both land in the ImageDecodeError
+            # path instead of one escaping as a 500 and the other decoding anyway.
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            img = Image.open(io.BytesIO(raw))
+            _reject_pixel_bomb(img)
+            img.load()  # force decode so truncated/corrupt bytes fail here, not later
+    except (
+        UnidentifiedImageError,
+        OSError,
+        ValueError,
+        SyntaxError,
+        Image.DecompressionBombError,
+        Image.DecompressionBombWarning,
+    ) as exc:
         raise ImageDecodeError(
             f"not a decodable image ({exc}); accepted formats: {ACCEPTED_FORMATS}"
         ) from exc

@@ -58,7 +58,14 @@
 
 	# Cap request bodies. OAuth POSTs are KiB-scale; MCP JSON-RPC fits under
 	# 1 MiB. Larger uploads are an abuse signal.
-	request_body {
+	#
+	# The matcher is load-bearing, NOT decoration: `request_body` sorts ahead of
+	# `handle` in Caddy's directive order, so an unmatched site-level cap wraps
+	# EVERY request in a 1MB MaxBytesReader — including the photo intake below,
+	# whose own 13MB cap would then be the inner (never-reached) reader. Exclude
+	# /capture/image here so its carve-out is the only cap on that path.
+	@capped not path /capture/image
+	request_body @capped {
 		max_size 1MB
 	}
 

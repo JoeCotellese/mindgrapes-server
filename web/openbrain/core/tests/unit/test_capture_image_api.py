@@ -217,6 +217,41 @@ def test_people_accepts_a_comma_separated_list(client, service):
     assert service["participants"] == [{"name": "Sofia"}, {"name": "Marco"}]
 
 
+def test_people_object_without_a_name_is_400(client, service):
+    # Well-formed JSON, wrong shape: the resolver reads p["name"], so a nameless
+    # object must be a 400 here rather than a KeyError 500 downstream.
+    resp = _post(client, {"image": _upload(), "people": '[{"relationship": "friend"}]'})
+    assert resp.status_code == 400
+    assert service == {}
+
+
+def test_people_object_with_a_blank_name_is_400(client, service):
+    resp = _post(client, {"image": _upload(), "people": '[{"name": "   "}]'})
+    assert resp.status_code == 400
+    assert service == {}
+
+
+def test_people_object_keeps_its_other_keys(client, service):
+    _post(
+        client,
+        {"image": _upload(), "people": '[{"name": " Sofia ", "relationship": "daughter"}]'},
+    )
+    assert service["participants"] == [{"name": "Sofia", "relationship": "daughter"}]
+
+
+def test_malformed_occurred_at_is_400(client, service):
+    # Forwarded raw into `%s::timestamptz`, so an unparseable value must not reach
+    # the service — it would 500 at the INSERT, after the blob was already stored.
+    resp = _post(client, {"image": _upload(), "occurred_at": "yesterday-ish"})
+    assert resp.status_code == 400
+    assert service == {}
+
+
+def test_occurred_at_is_passed_through_verbatim_when_valid(client, service):
+    _post(client, {"image": _upload(), "occurred_at": "2026-07-01T18:30:00+02:00"})
+    assert service["occurred_at"] == "2026-07-01T18:30:00+02:00"
+
+
 def test_labels_land_in_metadata(client, service):
     _post(client, {"image": _upload(), "labels": "beach, sunset"})
     assert service["metadata"]["labels"] == ["beach", "sunset"]

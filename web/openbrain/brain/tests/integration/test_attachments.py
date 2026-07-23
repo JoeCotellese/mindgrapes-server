@@ -1,3 +1,5 @@
+# ABOUTME: Integration tests for brain.blobs / brain.attachments against real Postgres.
+# ABOUTME: Covers refcounted dedup, supersede carry-forward, and orphan reconciliation.
 """Attachment integration tests against the real brain.* schema (#42).
 
 Requires the dev stack up (make dev-up) with init/19 applied (brain_ledger

@@ -189,6 +189,43 @@ def test_metadata_depth_bound_rejects_deep(wired):
         _call(metadata=node)
 
 
+def test_malformed_occurred_at_is_rejected_before_the_blob_is_put(wired):
+    # occurred_at rides raw into `%s::timestamptz`. Validating it only at the
+    # INSERT would fail after store.put and strand an orphan object in the bucket
+    # (the path orphan_blob_keys reserves for a crash, not for ordinary bad input).
+    with pytest.raises(image_captures.ImagePayloadError):
+        _call(occurred_at="yesterday-ish")
+    assert blobstore.MemoryBlobstore(bucket="test-bucket").list_keys() == []
+
+
+def test_unparseable_exif_timestamp_is_dropped_rather_than_fatal(wired, monkeypatch):
+    # A crafted EXIF DateTimeOriginal is the photographer's problem, not a reason
+    # to refuse the photo: drop the anchor, keep the capture.
+    real = image_captures.process_image
+
+    def junk_exif(raw):
+        processed = real(raw)
+        processed.exif_occurred_at = "20:26:07 not a time"
+        return processed
+
+    monkeypatch.setattr(f"{_MOD}.process_image", junk_exif)
+    _call(occurred_at=None)
+    assert wired["occurred_at"] is None
+
+
+def test_valid_exif_timestamp_still_anchors_the_experience(wired, monkeypatch):
+    real = image_captures.process_image
+
+    def dated_exif(raw):
+        processed = real(raw)
+        processed.exif_occurred_at = "2026-07-01T18:30:00"
+        return processed
+
+    monkeypatch.setattr(f"{_MOD}.process_image", dated_exif)
+    _call(occurred_at=None)
+    assert wired["occurred_at"] == "2026-07-01T18:30:00"
+
+
 def test_location_params_beat_exif_and_land_lat_lng(wired):
     _call(location={"lat": 45.5, "lng": -73.6, "label": "Montreal"})
     assert wired["lat"] == 45.5

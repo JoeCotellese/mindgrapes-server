@@ -1,3 +1,5 @@
+# ABOUTME: Integration tests for experience geolocation against real Postgres (#43).
+# ABOUTME: Covers the lat/lng columns, partial indexes, live-visible predicate, bbox read.
 """Geolocation integration tests against the real brain.* schema (#43).
 
 Requires the dev stack up (make dev-up); run via make dev-test-integration. These

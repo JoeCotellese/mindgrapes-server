@@ -23,6 +23,7 @@ caller description egress bytes.
 import json
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 
 from openbrain.brain.db import brain_cursor, dictfetchall, to_vector_literal
 from openbrain.brain.embeddings import embed_query
@@ -189,6 +190,33 @@ def _validate_metadata(metadata: dict | None) -> None:
         raise ImagePayloadError(f"metadata nested deeper than {MAX_METADATA_DEPTH}")
 
 
+def _is_iso_timestamp(value) -> bool:
+    if not isinstance(value, str) or not value.strip():
+        return False
+    try:
+        datetime.fromisoformat(value.strip())
+    except ValueError:
+        return False
+    return True
+
+
+def _resolve_when(occurred_at, exif_when) -> str | None:
+    """Caller time wins over EXIF; validate both before anything is stored.
+
+    occurred_at rides raw into `%s::timestamptz`, so an unparseable value would
+    otherwise fail at the INSERT — after store.put, stranding an orphan object
+    that orphan_blob_keys reserves for a crash, not for ordinary bad input. A bad
+    caller timestamp is an error; a crafted EXIF one just loses the anchor.
+    """
+    if occurred_at is not None and str(occurred_at).strip():
+        if not _is_iso_timestamp(occurred_at):
+            raise ImagePayloadError(
+                f"occurred_at must be an ISO 8601 timestamp, got {occurred_at!r}"
+            )
+        return str(occurred_at).strip()
+    return exif_when.strip() if _is_iso_timestamp(exif_when) else None
+
+
 def _compose_content(description, ocr, placeholder) -> tuple[str, bool]:
     """Return (content, is_placeholder). OCR/labels fold into the embedded content
     so search — which embeds/lexes content only — sees the richest signal."""
@@ -284,7 +312,7 @@ def capture_image(
     lat, lng = promote_latlng(
         location.get("lat"), location.get("lng"), blob.exif_lat, blob.exif_lng
     )
-    when = occurred_at or blob.exif_when
+    when = _resolve_when(occurred_at, blob.exif_when)
 
     content, _is_placeholder = _resolve_description(
         description=description,
