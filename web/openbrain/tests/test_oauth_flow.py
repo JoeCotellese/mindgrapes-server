@@ -519,6 +519,16 @@ def test_valid_redirect_uri_accepts(uri):
         "file:///etc/passwd",
         "intent://scan/#Intent;scheme=zxing;end",
         "myapp:/oauth-callback",
+        # ...and a bare word must not buy its way in with one trailing dot.
+        # "." in scheme was too loose: it accepted exactly the words above.
+        "javascript.:alert(1)",
+        "data.:text/html,<script>alert(1)</script>",
+        "file.:/etc/passwd",
+        # Empty labels anywhere are the same dodge wearing a different hat.
+        ".:/oauth-callback",
+        ".net.cotellese:/oauth-callback",
+        "net..cotellese:/oauth-callback",
+        "net.cotellese.:/oauth-callback",
         # A dotted scheme must not be able to smuggle in an authority.
         "net.cotellese.mindgrapes://evil.example.com/cb",
         "net.cotellese.mindgrapes://evil.example.com:443/cb",

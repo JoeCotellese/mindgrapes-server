@@ -309,10 +309,15 @@ def _valid_redirect_uri(uri) -> bool:
     Registration, so a hostile registration can't claim a dangerous callback.
 
     The private-use case is the RFC 8252 §7.1 native-app callback (the iOS
-    client's only viable shape). Two things keep it safe: the scheme must
-    contain a dot, so it's a reverse-DNS name the app owns rather than a
-    hijackable bare word like ``javascript`` or ``file``; and there must be no
-    authority at all, so a private-use registration can't smuggle in a host.
+    client's only viable shape). Two things keep it safe: the scheme must be
+    reverse-DNS *shaped* — two or more non-empty dot-separated labels — so a
+    hijackable bare word like ``javascript`` or ``file`` can't register, and
+    neither can a one-character dodge like ``javascript.``; and there must be
+    no authority at all, so a private-use registration can't smuggle in a host.
+
+    Shape is all this can check. Nothing here proves the registrant *owns* the
+    scheme — RFC 8252 can't either, since scheme ownership is arbitrated by the
+    OS that dispatches the callback, not by the authorization server.
     """
     if not isinstance(uri, str) or not uri or any(c.isspace() for c in uri):
         return False
@@ -328,7 +333,8 @@ def _valid_redirect_uri(uri) -> bool:
         return True
     if parts.scheme == "http":
         return parts.hostname in {"localhost", "127.0.0.1", "::1"}
-    return "." in parts.scheme and not parts.netloc
+    labels = parts.scheme.split(".")
+    return len(labels) > 1 and all(labels) and not parts.netloc
 
 
 def _dcr_error(code: str, description: str) -> JsonResponse:
