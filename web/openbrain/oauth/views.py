@@ -302,10 +302,17 @@ def _client_display_name(user, client_id) -> str:
 
 
 def _valid_redirect_uri(uri) -> bool:
-    """https anywhere, or http on loopback; no wildcards, userinfo, or IDN.
+    """https anywhere, http on loopback, or a private-use scheme with no
+    authority; no wildcards, userinfo, or IDN.
 
     Applied to every redirect_uri a client registers via Dynamic Client
     Registration, so a hostile registration can't claim a dangerous callback.
+
+    The private-use case is the RFC 8252 §7.1 native-app callback (the iOS
+    client's only viable shape). Two things keep it safe: the scheme must
+    contain a dot, so it's a reverse-DNS name the app owns rather than a
+    hijackable bare word like ``javascript`` or ``file``; and there must be no
+    authority at all, so a private-use registration can't smuggle in a host.
     """
     if not isinstance(uri, str) or not uri or any(c.isspace() for c in uri):
         return False
@@ -319,11 +326,9 @@ def _valid_redirect_uri(uri) -> bool:
         return False
     if parts.scheme == "https" and parts.hostname:
         return True
-    return parts.scheme == "http" and parts.hostname in {
-        "localhost",
-        "127.0.0.1",
-        "::1",
-    }
+    if parts.scheme == "http":
+        return parts.hostname in {"localhost", "127.0.0.1", "::1"}
+    return "." in parts.scheme and not parts.netloc
 
 
 def _dcr_error(code: str, description: str) -> JsonResponse:
