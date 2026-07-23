@@ -23,6 +23,7 @@ from openbrain.oauth.models import (
     OAuthClient,
     OAuthToken,
 )
+from openbrain.oauth.views import _valid_redirect_uri
 
 User = get_user_model()
 
@@ -434,6 +435,137 @@ def test_dcr_allows_loopback_http_redirect():
         content_type="application/json",
     )
     assert res.status_code == 201
+
+
+def test_dcr_allows_private_use_scheme_redirect():
+    res = Client().post(
+        "/oauth/register",
+        data=json.dumps(
+            {
+                "redirect_uris": ["net.cotellese.mindgrapes:/oauth-callback"],
+                "client_name": "MindGrapes iOS",
+            }
+        ),
+        content_type="application/json",
+    )
+    assert res.status_code == 201, res.content
+    client = OAuthClient.objects.get(client_id=res.json()["client_id"])
+    assert client.redirect_uris == ["net.cotellese.mindgrapes:/oauth-callback"]
+
+
+def test_dcr_rejects_private_use_scheme_with_authority():
+    res = Client().post(
+        "/oauth/register",
+        data=json.dumps(
+            {"redirect_uris": ["net.cotellese.mindgrapes://evil.example.com/cb"]}
+        ),
+        content_type="application/json",
+    )
+    assert res.status_code == 400
+    assert res.json()["error"] == "invalid_redirect_uri"
+    assert OAuthClient.objects.count() == 0
+
+
+# ---------------------------------------------------------------------------
+# redirect_uri validation (RFC 8252 §7.1 private-use schemes)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "https://app.example/cb",
+        "https://app.example:8443/cb",
+        "http://localhost:1234/cb",
+        "http://127.0.0.1:8765/cb",
+        "http://[::1]:8765/cb",
+        # RFC 8252 §7.1: reverse-DNS scheme the app owns, no authority.
+        "net.cotellese.mindgrapes:/oauth-callback",
+        "net.cotellese.mindgrapes:/oauth-callback?next=%2Fhome",
+    ],
+)
+def test_valid_redirect_uri_accepts(uri):
+    assert _valid_redirect_uri(uri)
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "",
+        None,
+        123,
+        ["https://app.example/cb"],
+        # Whitespace anywhere — including the trailing newline a copy-paste adds.
+        "https://app.example/c b",
+        "https://app.example/cb\n",
+        " https://app.example/cb",
+        "https://app.example/c\tb",
+        # Wildcards.
+        "https://*.example/cb",
+        "https://app.example/*",
+        "net.cotellese.*:/oauth-callback",
+        # IDN / non-ASCII.
+        "https://app.éxample/cb",
+        "net.cotellesé.mindgrapes:/oauth-callback",
+        # userinfo.
+        "https://user:pass@host/cb",
+        "https://user@host/cb",
+        # http off loopback.
+        "http://evil.example/cb",
+        "http://127.0.0.2/cb",
+        # No-dot schemes: this is what keeps the dangerous ones out.
+        "javascript:alert(1)",
+        "data:text/html,<script>alert(1)</script>",
+        "file:///etc/passwd",
+        "intent://scan/#Intent;scheme=zxing;end",
+        "myapp:/oauth-callback",
+        # ...and a bare word must not buy its way in with one trailing dot.
+        # "." in scheme was too loose: it accepted exactly the words above.
+        "javascript.:alert(1)",
+        "data.:text/html,<script>alert(1)</script>",
+        "file.:/etc/passwd",
+        # Empty labels anywhere are the same dodge wearing a different hat.
+        ".:/oauth-callback",
+        ".net.cotellese:/oauth-callback",
+        "net..cotellese:/oauth-callback",
+        "net.cotellese.:/oauth-callback",
+        # A dotted scheme must not be able to smuggle in an authority.
+        "net.cotellese.mindgrapes://evil.example.com/cb",
+        "net.cotellese.mindgrapes://evil.example.com:443/cb",
+        "net.cotellese.mindgrapes://user:pass@evil.example.com/cb",
+        # No scheme at all.
+        "/oauth-callback",
+        "//evil.example.com/cb",
+    ],
+)
+def test_valid_redirect_uri_rejects(uri):
+    assert not _valid_redirect_uri(uri)
+
+
+def test_authorize_exact_matches_private_use_redirect():
+    """A private-use redirect is matched exactly, like every other shape.
+
+    Registration accepts the URI; it does not relax matching. A sibling path
+    under the same scheme is a different callback and must be refused.
+    """
+    client = make_client(redirect_uris=["net.cotellese.mindgrapes:/oauth-callback"])
+    assert client.check_redirect_uri("net.cotellese.mindgrapes:/oauth-callback")
+    assert not client.check_redirect_uri("net.cotellese.mindgrapes:/oauth-callback/x")
+    assert not client.check_redirect_uri("net.cotellese.mindgrapes:/other")
+    assert not client.check_redirect_uri("net.cotellese.mindgrapes:")
+
+
+def test_authorize_redirects_to_private_use_callback():
+    make_client(redirect_uris=["net.cotellese.mindgrapes:/oauth-callback"])
+    http, _ = _logged_in_client()
+    code = _mint_code(
+        http,
+        create_s256_code_challenge("verifier" + "0" * 50),
+        redirect_uri="net.cotellese.mindgrapes:/oauth-callback",
+    )
+    assert OAuthAuthorizationCode.objects.get(code=code).get_redirect_uri() == (
+        "net.cotellese.mindgrapes:/oauth-callback"
+    )
 
 
 # ---------------------------------------------------------------------------
