@@ -177,8 +177,9 @@ services:
     # self-signed cert via `tls internal`; in prod auto-fetches a
     # Let's Encrypt cert for ${BRAIN_HOSTNAME}. Reverse-proxies the human/OAuth
     # paths to web and /mcp to the Python mcp service (which it path-splits).
-    # Also fronts minio on :9000 for presigned attachment fetches (tailnet only,
-    # never Funnel — see the attachments site block in caddy/Caddyfile).
+    # Also fronts minio on :9000 for presigned attachment fetches. How far that
+    # listener reaches is set by ATTACHMENTS_BIND_ADDR below, not by Funnel —
+    # see the attachments site block in caddy/Caddyfile.
     image: caddy:2-alpine
     container_name: openbrain-caddy
     restart: unless-stopped
@@ -192,9 +193,15 @@ services:
     ports:
       - "80:80"
       - "443:443"
-      # Attachment reads. Bound to the host so the tailnet IP reaches it; the
-      # tailnet is already WireGuard-encrypted. NOT exposed through Funnel.
-      - "${ATTACHMENTS_BIND_ADDR:-0.0.0.0}:9000:9000"
+      # Attachment reads. Deliberately no default: a bare 0.0.0.0 publishes
+      # minio's S3 API on every host NIC, and serve.json not publishing :9000
+      # only says it isn't on Funnel — it says nothing about the host's own
+      # interfaces. On the public-host recipe (docs/deploy.md) the box is
+      # directly on the internet, and Docker writes published-port rules into
+      # the DOCKER chain AHEAD of a ufw INPUT policy, so "open only 80+443"
+      # would not close this one. Set it to the tailnet IP (`tailscale ip -4`),
+      # or 127.0.0.1 when nothing off-host reads attachments.
+      - "${ATTACHMENTS_BIND_ADDR:?set ATTACHMENTS_BIND_ADDR in .env to the tailnet IP (tailscale ip -4) or 127.0.0.1 — see .env.example}:9000:9000"
     environment:
       BRAIN_HOSTNAME: ${BRAIN_HOSTNAME:-localhost}
     volumes:

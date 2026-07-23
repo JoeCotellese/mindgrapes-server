@@ -1,3 +1,6 @@
+-- ABOUTME: Adds brain.blobs + brain.attachments — the file-type-agnostic attachment substrate.
+-- ABOUTME: Fixes #42 — content-addressed object-store rows, refcounted one blob to N attachments.
+--
 -- Issue #42: attachments in the brain — a file-type-agnostic blob substrate and
 -- the per-experience attachment link. Images are the first ingest path; PDFs and
 -- other files slot in later with no schema change (hence the generic names).

@@ -308,6 +308,15 @@ Differences from the Tailscale recipe above:
   internet.
 - Point a public **DNS A/AAAA record** at the host, and open **80 + 443** inbound.
   Port 80 must be reachable for the HTTP-01 ACME challenge.
+- Set `ATTACHMENTS_BIND_ADDR=127.0.0.1`. This box is directly on the internet and
+  there is no tailnet to scope minio's S3 API to, so bind it to loopback.
+  Compose has no default for this and will refuse to start without it. Do not
+  rely on the firewall here: Docker publishes ports by writing into the `DOCKER`
+  iptables chain, which is evaluated **before** a `ufw` INPUT policy, so a
+  published `0.0.0.0:9000` stays reachable even after you "open only 80 + 443".
+  If you do want off-host attachment reads on this recipe, bind an interface you
+  have actually firewalled and verify from outside with
+  `nmap -Pn -p 9000 <host>` — expect `filtered`/`closed`.
 - Set the hostname env vars to your real domain (Caddy binds its TLS edge to
   `BRAIN_HOSTNAME`, so it must be the public name, not `localhost`):
 
@@ -444,9 +453,14 @@ served at the **root** of its own listener (the `:9000` block in
 signature has to be computed over the same prefixed path the proxy forwards —
 strip nothing.
 
-That listener is tailnet-only: `tailscale/serve.json` publishes `:443` (and
-Funnel) to `caddy:80` and does not publish `:9000`, so attachments never leave
-the tailnet. It also refuses anything but GET/HEAD — uploads go through the app,
+How far that listener reaches is decided by `ATTACHMENTS_BIND_ADDR`, which
+compose requires you to set (there is no default — an unset value fails the
+`docker compose up` with a message). `tailscale/serve.json` publishes `:443`
+(and Funnel) to `caddy:80` and does not publish `:9000`, which keeps attachments
+off Funnel — but serve.json does not bind the host's own interfaces, so it is
+not what keeps `:9000` off the public internet. Set the bind address to the
+tailnet IP (`tailscale ip -4`) for tailnet clients, or `127.0.0.1` when nothing
+off-host reads attachments. It also refuses anything but GET/HEAD — uploads go through the app,
 which owns auth, the size ceiling, and the decode check. Authorization for a read
 is the presigned URL itself: a short-TTL bearer minted only after the viewer
 passed `can_viewer_read`. It cannot be revoked once minted (no clawback, per
@@ -463,6 +477,9 @@ passed `can_viewer_read`. It cannot be revoked once minted (no clawback, per
 #      S3_BUCKET=brain-attachments
 #      S3_REGION=us-east-1
 #      S3_PUBLIC_ENDPOINT=http://<machine>.<tailnet>.ts.net:9000
+#      ATTACHMENTS_BIND_ADDR           REQUIRED, no default. The tailnet IP
+#                                      (`tailscale ip -4`), or 127.0.0.1 when
+#                                      nothing off-host reads attachments
 #      MAX_IMAGE_UPLOAD_BYTES          optional, default 12582912 (12MB)
 #    BLOBSTORE_BACKEND and S3_ENDPOINT are set inline by compose — leave them out.
 

@@ -15,9 +15,10 @@ silently dropped.
 
 import hashlib
 import io
+import re
 import warnings
 
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 try:
     import pillow_heif
@@ -51,6 +52,9 @@ ACCEPTED_FORMATS = "JPEG, PNG, WebP, GIF, HEIC/HEIF, TIFF, BMP"
 # the header, before load(). 50MP sits above today's full-res phone cameras (48MP
 # = 8064x6048) and well under Pillow's 89MP warn threshold.
 MAX_PIXELS = 50_000_000
+
+_EXIF_IFD = 0x8769
+_UTC_OFFSET_RE = re.compile(r"^[+-]\d{2}:\d{2}$")
 
 
 class ImageDecodeError(Exception):
@@ -121,20 +125,36 @@ def _decode(raw: bytes) -> Image.Image:
 
 
 def _exif_occurred_at(img: Image.Image) -> str | None:
-    """EXIF DateTimeOriginal ('YYYY:MM:DD HH:MM:SS') as naive ISO, or None."""
+    """EXIF DateTimeOriginal as ISO 8601, offset-qualified when the camera said so.
+
+    Tag 36867 carries local wall time and nothing else, and the value rides into
+    `%s::timestamptz` with the session TimeZone at Etc/UTC — so an unqualified
+    string is read as UTC and a photo shot at 18:30 in Rome anchors two hours
+    late. Tag 36881 (OffsetTimeOriginal), which iOS writes precisely to make that
+    recoverable, is appended when present; without it the zone is genuinely
+    unknowable and the naive value stays as the best-effort anchor.
+
+    36867/36880/36881 live in the Exif sub-IFD, not IFD0; only the 306 fallback
+    is an IFD0 tag.
+    """
     try:
         exif = img.getexif()
+        sub = exif.get_ifd(_EXIF_IFD)
     except Exception:
         return None
-    # 36867 = DateTimeOriginal; 306 = DateTime (fallback).
-    raw = exif.get(36867) or exif.get(306)
+    raw, offset = sub.get(36867), sub.get(36881)  # DateTimeOriginal, OffsetTimeOriginal
+    if not raw:
+        raw, offset = exif.get(306), sub.get(36880)  # DateTime, OffsetTime
     if not raw or not isinstance(raw, str):
         return None
     try:
         date_part, time_part = raw.strip().split(" ", 1)
-        return date_part.replace(":", "-") + "T" + time_part
     except ValueError:
         return None
+    stamp = date_part.replace(":", "-") + "T" + time_part
+    if isinstance(offset, str) and _UTC_OFFSET_RE.match(offset.strip()):
+        stamp += offset.strip()
+    return stamp
 
 
 def _exif_gps(img: Image.Image) -> tuple[float | None, float | None]:
@@ -147,12 +167,20 @@ def _exif_gps(img: Image.Image) -> tuple[float | None, float | None]:
 
 
 def _reencode_webp(img: Image.Image) -> tuple[bytes, int, int]:
-    """Downscale to fit MAX_DIM (only ever down) and encode a bounded WebP."""
+    """Downscale to fit MAX_DIM (only ever down) and encode a bounded WebP.
+
+    exif_transpose bakes EXIF Orientation into the pixels first. Only the
+    derivative is stored (the original bytes are discarded) and the WebP carries
+    no EXIF, so an unapplied rotation is lost rather than deferred — and
+    Orientation=6 is the iOS portrait default, so this is the common case for a
+    real phone photo, not an edge one. Transposing also makes the returned
+    width/height the DISPLAY dimensions, which is what attachments records.
+    """
     frame = img
     if getattr(img, "is_animated", False):
         img.seek(0)
         frame = img
-    rgb = frame.convert("RGB")
+    rgb = ImageOps.exif_transpose(frame).convert("RGB")
     rgb.thumbnail((MAX_DIM, MAX_DIM), Image.LANCZOS)
     buf = io.BytesIO()
     rgb.save(buf, format="WEBP", quality=WEBP_QUALITY, method=WEBP_METHOD)

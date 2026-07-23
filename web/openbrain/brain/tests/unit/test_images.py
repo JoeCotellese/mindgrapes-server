@@ -149,3 +149,94 @@ def test_exif_gps_promoted_from_image():
     assert result.exif_lat is not None and result.exif_lng is not None
     assert 41.0 < result.exif_lat < 42.0
     assert 12.0 < result.exif_lng < 13.0
+
+
+def _jpeg_with_exif(source: Image.Image, *, orientation=None, original=None,
+                    offset=None, plain=None) -> bytes:
+    # DateTimeOriginal/OffsetTimeOriginal live in the Exif sub-IFD (0x8769);
+    # Orientation and DateTime live in IFD0. Write each where a camera writes it.
+    exif = source.getexif()
+    if orientation is not None:
+        exif[Base.Orientation.value] = orientation
+    if plain is not None:
+        exif[Base.DateTime.value] = plain
+    sub = exif.get_ifd(0x8769)
+    if original is not None:
+        sub[Base.DateTimeOriginal.value] = original
+    if offset is not None:
+        sub[Base.OffsetTimeOriginal.value] = offset
+    buf = io.BytesIO()
+    source.save(buf, format="JPEG", exif=exif)
+    return buf.getvalue()
+
+
+def test_exif_orientation_is_baked_into_the_derivative():
+    # Orientation=6 is the iOS portrait default: the raster is stored landscape
+    # and only displays upright once rotated. The WebP derivative carries no EXIF
+    # and the original bytes are discarded, so an unapplied rotation is lost.
+    raw = _jpeg_with_exif(Image.new("RGB", (400, 200), (10, 20, 30)), orientation=6)
+    result = images.process_image(raw)
+    assert (result.width, result.height) == (200, 400)
+
+
+def test_no_orientation_tag_leaves_the_frame_alone():
+    raw = _jpeg_with_exif(Image.new("RGB", (400, 200), (10, 20, 30)))
+    result = images.process_image(raw)
+    assert (result.width, result.height) == (400, 200)
+
+
+def test_exif_orientation_moves_pixels_not_just_the_frame():
+    # Orientation=3 (180) keeps the dimensions, so only the pixels prove it ran.
+    src = Image.new("RGB", (400, 200), (0, 0, 0))
+    src.paste((255, 255, 255), (0, 0, 120, 60))  # white block in the top-left
+    result = images.process_image(_jpeg_with_exif(src, orientation=3))
+    out = Image.open(io.BytesIO(result.derivative)).convert("RGB")
+    assert out.getpixel((out.width - 10, out.height - 10))[0] > 200
+    assert out.getpixel((10, 10))[0] < 60
+
+
+def test_exif_datetime_original_carries_the_camera_utc_offset():
+    # Tag 36867 is local wall time; 36881 is the offset iOS writes beside it.
+    # Without the offset the value is read as UTC and every capture is skewed.
+    raw = _jpeg_with_exif(
+        Image.new("RGB", (300, 200), (10, 20, 30)),
+        original="2026:07:01 18:30:00",
+        offset="+02:00",
+    )
+    assert images.process_image(raw).exif_occurred_at == "2026-07-01T18:30:00+02:00"
+
+
+def test_exif_negative_utc_offset_is_preserved():
+    raw = _jpeg_with_exif(
+        Image.new("RGB", (300, 200), (10, 20, 30)),
+        original="2026:07:01 18:30:00",
+        offset="-05:00",
+    )
+    assert images.process_image(raw).exif_occurred_at == "2026-07-01T18:30:00-05:00"
+
+
+def test_exif_datetime_original_is_read_from_the_exif_sub_ifd():
+    raw = _jpeg_with_exif(
+        Image.new("RGB", (300, 200), (10, 20, 30)), original="2026:07:01 18:30:00"
+    )
+    assert images.process_image(raw).exif_occurred_at == "2026-07-01T18:30:00"
+
+
+def test_malformed_exif_offset_is_ignored():
+    raw = _jpeg_with_exif(
+        Image.new("RGB", (300, 200), (10, 20, 30)),
+        original="2026:07:01 18:30:00",
+        offset="not an offset",
+    )
+    assert images.process_image(raw).exif_occurred_at == "2026-07-01T18:30:00"
+
+
+def test_exif_datetime_falls_back_to_ifd0_tag_306():
+    raw = _jpeg_with_exif(
+        Image.new("RGB", (300, 200), (10, 20, 30)), plain="2026:07:01 18:30:00"
+    )
+    assert images.process_image(raw).exif_occurred_at == "2026-07-01T18:30:00"
+
+
+def test_no_exif_timestamp_yields_none():
+    assert images.process_image(_png_bytes(200, 150)).exif_occurred_at is None

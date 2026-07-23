@@ -142,10 +142,14 @@
 # invalidates every presigned URL and minio answers 403 SignatureDoesNotMatch.
 # Keeping minio at "/" means the path boto3 signed is the path minio receives.
 #
-# This listener is tailnet-only. tailscale/serve.json publishes :443 (and
-# Funnel) -> caddy:80; it does NOT publish :9000, so attachments never leave the
-# tailnet. Authorization is the presigned URL itself: a short-TTL bearer minted
-# only after can_viewer_read passed (brain/services/reads.py).
+# How far this listener reaches is decided on the HOST, by ATTACHMENTS_BIND_ADDR
+# (docker-compose.yml) — set it to the tailnet IP, or 127.0.0.1 for same-host
+# only. serve.json publishing :443/Funnel -> caddy:80 and not :9000 keeps
+# attachments off Funnel; it does NOT bind the host's own interfaces, so it is
+# not on its own what keeps them off the public internet. Authorization is the
+# presigned URL itself: a short-TTL bearer minted only after can_viewer_read
+# passed (brain/services/reads.py); the bind address is what keeps a leaked one
+# redeemable from the tailnet rather than from anywhere.
 :9000 {
 	log {
 		output stdout

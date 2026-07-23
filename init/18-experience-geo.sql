@@ -1,3 +1,6 @@
+-- ABOUTME: Adds indexed lat/lng columns to brain.experiences plus a bounding-box read path.
+-- ABOUTME: Fixes #43 — location is an experience property, shared by map reads and hybrid search.
+--
 -- Issue #43: experience geolocation — indexed lat/lng columns + the shared
 -- live+visible read predicate that the bounding-box helper and match_brain_hybrid
 -- both consume.
