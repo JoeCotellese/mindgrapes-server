@@ -216,3 +216,17 @@ BRAIN_METADATA_FN = "openbrain.brain.extraction.metadata.extract_metadata"
 # household. DEFAULT_OWNER / HOUSEHOLD_ACCOUNT_ID come from the shared .env.
 BRAIN_DEFAULT_OWNER = env("DEFAULT_OWNER", default="owner")
 BRAIN_HOUSEHOLD_ACCOUNT_ID = env("HOUSEHOLD_ACCOUNT_ID", default="household")
+
+# capture_image (#42). Image blobs live in S3-compatible object storage; the
+# vision fallback describes an otherwise-textless image. Both are seams:
+# BLOBSTORE_BACKEND selects the in-memory fake (default, and what the unit suite
+# uses) vs the real S3 client; BRAIN_VISION_FN is a dotted path resolved at call
+# time so tests never egress image bytes. Production/dev-stack set backend='s3'
+# and the S3_* vars from the shared .env — never derived from a request or EXIF.
+BLOBSTORE_BACKEND = env("BLOBSTORE_BACKEND", default="memory")
+S3_ENDPOINT = env("S3_ENDPOINT", default="")
+S3_BUCKET = env("S3_BUCKET", default="brain-attachments")
+S3_ACCESS_KEY = env("S3_ACCESS_KEY", default="")
+S3_SECRET_KEY = env("S3_SECRET_KEY", default="")
+S3_REGION = env("S3_REGION", default="")
+BRAIN_VISION_FN = "openbrain.brain.vision.describe_image"

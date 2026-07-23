@@ -103,6 +103,17 @@ _SET_SUPERSEDED_BY_SQL = """
      where id = %s::uuid
 """
 
+# Carry attachments forward onto the superseding row (#42). match_brain_hybrid
+# surfaces only the live row, so without this a caption edit would orphan the
+# image from search the instant the old row supersedes. Cheap: the blob is shared
+# by blob_id, so this copies only the link (new attachment id, same blob).
+_CARRY_ATTACHMENTS_SQL = """
+    insert into brain.attachments (experience_id, blob_id, width, height)
+    select %s::uuid, blob_id, width, height
+      from brain.attachments
+     where experience_id = %s::uuid
+"""
+
 _CLAIM_SOURCES_BY_KIND_SQL = """
     select cs.claim_id::text as claim_id,
            cs.support_kind::text as support_kind
@@ -270,6 +281,7 @@ def _supersede(
     new_id = dictfetchall(cursor)[0]["id"]
     result["new_id"] = new_id
     cursor.execute(_SET_SUPERSEDED_BY_SQL, [new_id, experience_id])
+    cursor.execute(_CARRY_ATTACHMENTS_SQL, [new_id, experience_id])
 
     cursor.execute(_CLAIM_SOURCES_BY_KIND_SQL, [experience_id])
     auto_retract = []

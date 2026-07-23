@@ -135,11 +135,25 @@ class ExperienceDetail(BaseModel):
     can_change_visibility: bool
 
 
+class AttachmentBlock(BaseModel):
+    # Short-lived presigned GET URL, regenerated on every read (NOT cacheable —
+    # it expires in ~60s and is never logged/persisted). mime/width/height/
+    # byte_len come off the row, so display needs no S3 round-trip. Un-share does
+    # not revoke an already-minted URL (no clawback, per #48); the TTL bounds it.
+    presigned_url: str
+    mime: str
+    width: int | None = None
+    height: int | None = None
+    byte_len: int | None = None
+
+
 class GetExperienceResult(BaseModel):
     found: bool
     experience: ExperienceDetail | None = None
     mentions: list[ExperienceMention] | None = None
     claims_sourced_here: list[ExperienceSourcedClaim] | None = None
+    # Present only when the experience has an attachment (#42); None otherwise.
+    attachment: AttachmentBlock | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -207,6 +221,33 @@ class CaptureThoughtResult(BaseModel):
     borderline_matches: list[BorderlineMatch] | None = None
     # Provisional best-guess binds the caller must reconcile (#8); empty when the
     # capture had no borderline participant.
+    needs_disambiguation: list[NeedsDisambiguation] | None = None
+    claims_pending: bool | None = None
+
+
+# ---------------------------------------------------------------------------
+# capture_image (#42) — input + output
+# ---------------------------------------------------------------------------
+
+
+class LocationInput(BaseModel):
+    # lat/lng are the geometric truth; label/accuracy_m/source ride in metadata.
+    # params beat EXIF (see extraction.geo.promote_latlng).
+    lat: float | None = None
+    lng: float | None = None
+    label: str | None = None
+    accuracy_m: float | None = None
+    source: str | None = None
+
+
+class CaptureImageResult(BaseModel):
+    experience_id: str
+    attachment_id: str
+    object_key: str
+    byte_len: int
+    is_structured: bool
+    metadata: dict[str, Any]
+    extracted_entities: list[ExtractedEntity] | None = None
     needs_disambiguation: list[NeedsDisambiguation] | None = None
     claims_pending: bool | None = None
 

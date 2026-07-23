@@ -6,6 +6,8 @@ identical-404 privacy rule live here; claims stay
 unfiltered — a documented soft-privacy leak.
 """
 
+import logging
+
 from django.utils import timezone
 
 from openbrain.brain.auth import can_edit_visibility, can_viewer_read
@@ -17,6 +19,9 @@ from openbrain.brain.db import (
 )
 from openbrain.brain.embeddings import embed_query
 from openbrain.brain.excerpts import format_excerpt
+from openbrain.brain.services import blobstore as blobstore_mod
+
+logger = logging.getLogger(__name__)
 
 _SUMMARY_SQL = """
     select experience_count,
@@ -105,12 +110,60 @@ _EXPERIENCE_CLAIMS_SQL = """
 """
 
 
+# One attachment + its blob for an experience. The presigned URL is minted from
+# object_key at read time, never stored (see _attachment_block); mime/width/height/
+# byte_len live on the rows so display needs no S3 round-trip.
+_EXPERIENCE_ATTACHMENT_SQL = """
+    select a.id::text        as attachment_id,
+           a.width           as width,
+           a.height          as height,
+           b.object_key      as object_key,
+           b.mime            as mime,
+           b.byte_len        as byte_len
+      from brain.attachments a
+      join brain.blobs b on b.id = a.blob_id
+     where a.experience_id = %s::uuid
+     order by a.created_at
+     limit 1
+"""
+
+
+def _attachment_block(cursor, experience_id: str) -> dict | None:
+    """Resolve the experience's attachment and mint a short-TTL presigned GET URL.
+
+    Called ONLY after can_viewer_read passed for this exact row — the presign is
+    a bearer token, so it is authorized at mint time. The signed URL is
+    regenerated every call and is never logged or persisted (we log the
+    object_key); an outstanding URL cannot be revoked by un-share (no clawback,
+    per #48) — the ~60s TTL bounds that window.
+    """
+    cursor.execute(_EXPERIENCE_ATTACHMENT_SQL, [experience_id])
+    rows = dictfetchall(cursor)
+    if not rows:
+        return None
+    row = rows[0]
+    store = blobstore_mod.get_blobstore()
+    logger.info("presign attachment experience=%s object_key=%s", experience_id,
+                row["object_key"])
+    return {
+        "presigned_url": store.presign(row["object_key"]),
+        "mime": row["mime"],
+        "width": row["width"],
+        "height": row["height"],
+        "byte_len": row["byte_len"],
+    }
+
+
 def get_experience_detail(viewer: str, experience_id: str) -> dict | None:
     """One experience with its mentions and claims-sourced-here (US-3).
 
     Returns None when the row is missing OR private-and-not-the-viewer's, so a
     private id is an identical 404 to a missing one. Lifecycle (superseded /
     deleted) is NOT gated — the audit row stays reachable, flagged is_live.
+
+    When the experience has an attachment (#42), an `attachment` block with a
+    fresh short-TTL presigned URL is included — minted only after the viewer read
+    check passes, never for a row the viewer can't read.
     """
     with brain_cursor() as cursor:
         cursor.execute(_EXPERIENCE_SQL, [experience_id])
@@ -134,10 +187,13 @@ def get_experience_detail(viewer: str, experience_id: str) -> dict | None:
         cursor.execute(_EXPERIENCE_CLAIMS_SQL, [experience_id])
         claims = dictfetchall(cursor)
 
+        attachment = _attachment_block(cursor, experience_id)
+
     return {
         "experience": experience,
         "mentions": mentions,
         "claims_sourced_here": claims,
+        "attachment": attachment,
     }
 
 

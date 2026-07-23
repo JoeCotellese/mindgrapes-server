@@ -14,6 +14,7 @@ from openbrain.mcp.guards import _guarded, viewer_sub
 from openbrain.mcp.resources import workflows_document
 from openbrain.mcp.serialization import serialize
 from openbrain.mcp.tools.entity_tools import register_entity_tools
+from openbrain.mcp.tools.image_tools import register_image_tools
 from openbrain.mcp.tools.read_tools import register_read_tools
 from openbrain.mcp.tools.review_tools import register_review_tools
 
@@ -287,5 +288,6 @@ def build_server(auth=None) -> FastMCP:
     register_read_tools(mcp)
     register_entity_tools(mcp)
     register_review_tools(mcp)
+    register_image_tools(mcp)
 
     return mcp

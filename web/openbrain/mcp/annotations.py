@@ -43,6 +43,7 @@ TITLES = {
     "thought_stats": "Thought Statistics",
     "get_experience": "Get Experience",
     "capture_thought": "Capture Thought",
+    "capture_image": "Capture Image",
     "merge_entities": "Merge Entities",
     "rename_entity": "Rename Entity",
     "retract_claim": "Retract Claim",

@@ -92,6 +92,7 @@ def test_edit_content_supersedes_and_auto_retracts(monkeypatch):
             (["similarity"], [(0.42,)]),  # cosine below threshold
             (["id"], [("22222222-2222-2222-2222-222222222222",)]),  # insert returning
             ([], []),  # set superseded_by
+            ([], []),  # carry attachments forward (#42)
             (
                 ["claim_id", "support_kind"],
                 [("c-verbatim", "verbatim"), ("c-para", "paraphrased")],

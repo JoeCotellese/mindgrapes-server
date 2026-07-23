@@ -90,6 +90,16 @@ CLAIM_COLUMNS = [
 ]
 
 
+ATTACHMENT_COLUMNS = [
+    "attachment_id",
+    "width",
+    "height",
+    "object_key",
+    "mime",
+    "byte_len",
+]
+
+
 def _exp_row(owner="7", visibility="private", superseded_by=None, deleted_at=None):
     # metadata is jsonb → text on this stack; the service parses it.
     return (
@@ -128,12 +138,14 @@ def test_get_experience_detail_owner_sees_live_editable(monkeypatch):
             (EXPERIENCE_COLUMNS, [_exp_row(owner="7", visibility="private")]),
             (MENTION_COLUMNS, [mention]),
             (CLAIM_COLUMNS, [claim]),
+            (ATTACHMENT_COLUMNS, []),
         ]
     )
     patch_brain_cursor(monkeypatch, cursor)
 
     detail = get_experience_detail("7", "exp-1")
 
+    assert detail["attachment"] is None
     assert detail["experience"]["is_live"] is True
     assert detail["experience"]["can_change_visibility"] is True
     assert detail["experience"]["metadata"] == {"k": "v"}  # jsonb text parsed
@@ -165,6 +177,7 @@ def test_get_experience_detail_superseded_marks_not_live(monkeypatch):
             (EXPERIENCE_COLUMNS, [_exp_row(owner="7", superseded_by="exp-2")]),
             (MENTION_COLUMNS, []),
             (CLAIM_COLUMNS, []),
+            (ATTACHMENT_COLUMNS, []),
         ]
     )
     patch_brain_cursor(monkeypatch, cursor)
@@ -181,6 +194,7 @@ def test_get_experience_detail_shared_readable_but_not_editable(monkeypatch):
             (EXPERIENCE_COLUMNS, [_exp_row(owner="9", visibility="shared")]),
             (MENTION_COLUMNS, []),
             (CLAIM_COLUMNS, []),
+            (ATTACHMENT_COLUMNS, []),
         ]
     )
     patch_brain_cursor(monkeypatch, cursor)
@@ -189,6 +203,34 @@ def test_get_experience_detail_shared_readable_but_not_editable(monkeypatch):
 
     assert detail is not None
     assert detail["experience"]["can_change_visibility"] is False
+
+
+def test_get_experience_detail_returns_attachment_block(monkeypatch):
+    from openbrain.brain.services import blobstore
+
+    blobstore._MEMORY_STORE.clear()
+    monkeypatch.setattr(
+        "openbrain.brain.services.reads.blobstore_mod.get_blobstore",
+        lambda: blobstore.MemoryBlobstore(bucket="test-bucket"),
+    )
+    attachment = ("att-1", 1024, 768, "household/abc.webp", "image/webp", 90000)
+    cursor = StubCursor(
+        [
+            (EXPERIENCE_COLUMNS, [_exp_row(owner="7", visibility="private")]),
+            (MENTION_COLUMNS, []),
+            (CLAIM_COLUMNS, []),
+            (ATTACHMENT_COLUMNS, [attachment]),
+        ]
+    )
+    patch_brain_cursor(monkeypatch, cursor)
+
+    detail = get_experience_detail("7", "exp-1")
+
+    block = detail["attachment"]
+    assert block["mime"] == "image/webp"
+    assert block["width"] == 1024
+    assert block["byte_len"] == 90000
+    assert "household/abc.webp" in block["presigned_url"]
 
 
 ENTITY_COLUMNS = [

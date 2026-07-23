@@ -80,6 +80,9 @@ def capture(
     lat: float | None = None,
     lng: float | None = None,
     client: str = "mcp",
+    metadata_extra: dict | None = None,
+    embedding: list[float] | None = None,
+    after_insert=None,
 ) -> dict:
     """Write one experience and return the capture_thought structuredContent dict.
 
@@ -92,6 +95,14 @@ def capture(
     `client` names who wrote the row and lands in metadata.source — a different
     axis from source_kind, which says how the content was acquired. Callers are
     trusted server-side entry points, never a value a remote client supplies.
+
+    `embedding` (precomputed) lets a caller that already embedded — e.g.
+    capture_image, which must embed BEFORE its S3 put — skip the internal embed
+    call. `metadata_extra` merges extra keys into the row metadata (image facts).
+    `after_insert(cursor, experience_id)` runs inside the same open transaction,
+    right after the experience (and participant) inserts, so an attachment row
+    commits atomically with its experience. Both are internal seams for
+    capture_image, not part of the MCP surface.
     """
     if is_structured_capture(
         occurred_at, participants, predicate_hints, source_kind, source_ref
@@ -109,6 +120,9 @@ def capture(
             lat=lat,
             lng=lng,
             client=client,
+            metadata_extra=metadata_extra,
+            embedding=embedding,
+            after_insert=after_insert,
         )
     return _bare_capture(
         content=content,
@@ -118,13 +132,30 @@ def capture(
         lat=lat,
         lng=lng,
         client=client,
+        metadata_extra=metadata_extra,
+        embedding=embedding,
+        after_insert=after_insert,
     )
 
 
-def _bare_capture(*, content, owner, account_id, visibility, lat, lng, client) -> dict:
-    embedding_lit = to_vector_literal(embed_query(content))
+def _bare_capture(
+    *,
+    content,
+    owner,
+    account_id,
+    visibility,
+    lat,
+    lng,
+    client,
+    metadata_extra=None,
+    embedding=None,
+    after_insert=None,
+) -> dict:
+    embedding_lit = to_vector_literal(
+        embedding if embedding is not None else embed_query(content)
+    )
     metadata = import_string(settings.BRAIN_METADATA_FN)(content)
-    full_metadata = {**metadata, "source": client}
+    full_metadata = {**metadata, "source": client, **(metadata_extra or {})}
 
     with transaction.atomic(), brain_cursor() as cursor:
         cursor.execute(
@@ -144,6 +175,8 @@ def _bare_capture(*, content, owner, account_id, visibility, lat, lng, client) -
             ],
         )
         experience_id = dictfetchall(cursor)[0]["id"]
+        if after_insert is not None:
+            after_insert(cursor, experience_id)
 
     return {
         "experience_id": experience_id,
@@ -166,18 +199,25 @@ def _structured_capture(
     lat,
     lng,
     client,
+    metadata_extra=None,
+    embedding=None,
+    after_insert=None,
 ) -> dict:
     parts = participants or []
     hints = predicate_hints or []
     people_names = [p["name"] for p in parts]
 
-    embedding_lit = to_vector_literal(embed_query(content))
+    embedding_lit = to_vector_literal(
+        embedding if embedding is not None else embed_query(content)
+    )
 
     # Row metadata: predicate_hints stashed only when non-empty so
     # the consolidation worker can use them as anchors.
     row_metadata: dict = {"source": client, "people": people_names}
     if hints:
         row_metadata["predicate_hints"] = hints
+    if metadata_extra:
+        row_metadata.update(metadata_extra)
 
     with transaction.atomic(), brain_cursor() as cursor:
         cursor.execute(
@@ -200,6 +240,8 @@ def _structured_capture(
         extracted, borderline, needs_disambiguation = _resolve_participants(
             cursor, experience_id, embedding_lit, parts
         )
+        if after_insert is not None:
+            after_insert(cursor, experience_id)
 
     return {
         "experience_id": experience_id,

@@ -23,6 +23,9 @@ dependencies = [
     "uvicorn>=0.34",
     "httpx>=0.28",
     "fastmcp>=2.13",
+    "boto3>=1.35",
+    "pillow>=11.0",
+    "pillow-heif>=0.18",
 ]
 
 [project.optional-dependencies]

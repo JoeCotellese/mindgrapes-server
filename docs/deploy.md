@@ -555,3 +555,52 @@ entry to `SPINE` in `web/openbrain/mcp/boot.py`; (3) add the matching row to the
   sessions survive an mcp container restart (cookies still valid; JWTs
   outlive the process); Caddy's cert cache lives in the `caddy-data`
   volume so a Caddy restart doesn't re-request a cert.
+
+## Object storage for attachments (images, #42)
+
+`capture_image` stores a bounded WebP derivative of each image in S3-compatible
+object storage; the DB holds only `brain.attachments` (experience→blob links) and
+`brain.blobs` (content-addressed object records). Config (`.env`, gitignored,
+never committed):
+
+- `BLOBSTORE_BACKEND=s3` (default `memory`, which the unit suite uses).
+- `S3_ENDPOINT` (e.g. a minio or Hetzner Object Storage URL), `S3_BUCKET`,
+  `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_REGION`. These are pinned to server
+  config only — never derived from a request or from EXIF. The client uses
+  path-style addressing so a minio endpoint works without per-bucket DNS.
+
+### Presigned reads (bearer tokens, no clawback)
+
+`get_experience` mints a short-TTL (~60s) presigned GET URL only after the viewer
+read check passes. The signed URL is a **bearer token**: it is regenerated on
+every call, is never logged or persisted (we log the `object_key`), and — per the
+supersede/no-clawback rule (#48) — an already-minted URL keeps working until it
+expires even if the item is later un-shared. The short TTL is the only bound.
+`mime/width/height/byte_len` live on the row so display needs no S3 round-trip.
+
+### Vision egress (cross-boundary, opt-in)
+
+When an image has no caller description, a `'shared'` capture is described by a
+third-party vision model (OpenRouter) — the derivative image bytes leave the
+host. A `'private'`/default capture is **never** egressed: it fails closed to a
+deterministic placeholder and a `description_pending` flag for a later
+re-description pass. This is the only path that sends image bytes off-box.
+
+### Backup (object bucket is a second backup surface)
+
+`pg_dump` does NOT capture the bucket. A DB-only restore that lost the bucket
+leaves every attachment row pointing at a missing object. Treat the bucket as a
+first-class backup surface: mirror it (restic / `mc mirror`) on the same schedule
+as the DB dump, add `brain.attachments` + `brain.blobs` to the restore-drill
+counts, and HEAD a sample of `object_key`s in the drill so a lost bucket FAILS
+the drill instead of passing silently. (Wiring the mirror into `backup.sh` + the
+systemd unit is a tracked follow-up.)
+
+### GC of orphan blobs (follow-up)
+
+Deleting an experience cascades its `attachments` row but leaves the shared blob
+(other experiences may reference it). A blob is reap-eligible only when zero live
+attachments reference its `blob_id` AND its object is older than a grace horizon
+(>=24h, safely past the longest capture). The reaper itself is a scoped
+follow-up; the orphan-detection reconciliation (`image_captures.orphan_blob_keys`)
+and its integration test ship now.
