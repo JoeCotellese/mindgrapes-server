@@ -15,13 +15,15 @@ from openbrain.brain.services.entity_resolver import (
 )
 from openbrain.brain.services.reviews import open_provisional_binding_on_cursor
 
-# Same 11 columns + 'pending' status as edits.py's superseding insert. source_kind
-# and account_id/visibility coalesce to the brain defaults when null.
+# Same base columns + 'pending' status as edits.py's superseding insert. source_kind
+# and account_id/visibility coalesce to the brain defaults when null. lat/lng (#43)
+# are nullable geolocation columns: null when the caller gave neither params nor
+# usable EXIF, and never an error.
 _INSERT_EXPERIENCE_SQL = """
     insert into brain.experiences (
         captured_at, occurred_at, source_kind, source_ref,
         content, embedding, metadata, consolidation_status,
-        owner, account_id, visibility
+        owner, account_id, visibility, lat, lng
     ) values (
         now(),
         %s::timestamptz,
@@ -33,7 +35,9 @@ _INSERT_EXPERIENCE_SQL = """
         'pending'::brain.consolidation_status,
         %s,
         coalesce(%s, 'household'),
-        coalesce(%s::brain.visibility, 'private'::brain.visibility)
+        coalesce(%s::brain.visibility, 'private'::brain.visibility),
+        %s,
+        %s
     )
     returning id::text as id
 """
@@ -73,6 +77,8 @@ def capture(
     predicate_hints: list[dict] | None = None,
     source_kind: str | None = None,
     source_ref: str | None = None,
+    lat: float | None = None,
+    lng: float | None = None,
     client: str = "mcp",
 ) -> dict:
     """Write one experience and return the capture_thought structuredContent dict.
@@ -100,6 +106,8 @@ def capture(
             predicate_hints=predicate_hints,
             source_kind=source_kind,
             source_ref=source_ref,
+            lat=lat,
+            lng=lng,
             client=client,
         )
     return _bare_capture(
@@ -107,11 +115,13 @@ def capture(
         owner=owner,
         account_id=account_id,
         visibility=visibility,
+        lat=lat,
+        lng=lng,
         client=client,
     )
 
 
-def _bare_capture(*, content, owner, account_id, visibility, client) -> dict:
+def _bare_capture(*, content, owner, account_id, visibility, lat, lng, client) -> dict:
     embedding_lit = to_vector_literal(embed_query(content))
     metadata = import_string(settings.BRAIN_METADATA_FN)(content)
     full_metadata = {**metadata, "source": client}
@@ -129,6 +139,8 @@ def _bare_capture(*, content, owner, account_id, visibility, client) -> dict:
                 owner,
                 account_id,
                 visibility,
+                lat,
+                lng,
             ],
         )
         experience_id = dictfetchall(cursor)[0]["id"]
@@ -151,6 +163,8 @@ def _structured_capture(
     predicate_hints,
     source_kind,
     source_ref,
+    lat,
+    lng,
     client,
 ) -> dict:
     parts = participants or []
@@ -178,6 +192,8 @@ def _structured_capture(
                 owner,
                 account_id,
                 visibility,
+                lat,
+                lng,
             ],
         )
         experience_id = dictfetchall(cursor)[0]["id"]

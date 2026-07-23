@@ -32,11 +32,13 @@ _SELECT_COLS = [
     "owner",
     "account_id",
     "visibility",
+    "lat",
+    "lng",
 ]
 
 
 def _row(owner="alice", visibility="private", metadata='{"k": 1}', content="old"):
-    return (ID, content, metadata, None, "note", None, owner, "acct", visibility)
+    return (ID, content, metadata, None, "note", None, owner, "acct", visibility, None, None)
 
 
 def _patch(monkeypatch, cursor, embedding=None):
