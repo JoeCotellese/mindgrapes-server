@@ -16,4 +16,7 @@ urlpatterns = [
     # Bearer-authed multipart photo intake for the app (#42) — same auth as
     # /capture, same write engine as the MCP capture_image tool.
     path("capture/image", views.capture_image_api, name="capture-image"),
+    # Bearer-authed JSON note intake for the app (#53) — a typed note, no URL and
+    # no summarization, stored as source_kind="manual", client="app".
+    path("capture/note", views.capture_note_api, name="capture-note"),
 ]
