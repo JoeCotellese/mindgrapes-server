@@ -147,6 +147,57 @@ class TestHandleNotification:
         assert (kind, name) == ("animal", "Roger")
         assert object_id != person_roger  # the pet did NOT bind to the person
 
+    def test_first_person_claim_creates_no_junk_entity(self):
+        # #56: "I met Jim" must NOT mint a person entity named "I". The self claim
+        # is dropped; the co-mentioned third party ("Jim") is still written.
+        claims = {
+            "claims": [
+                {
+                    "subject": "I",
+                    "subject_kind": "person",
+                    "predicate": "knows",
+                    "predicate_detail": None,
+                    "object": "Jim",
+                    "object_kind": "person",
+                    "support_kind": "verbatim",
+                    "confidence": 0.9,
+                },
+                {
+                    "subject": "Jim",
+                    "subject_kind": "person",
+                    "predicate": "works_at",
+                    "predicate_detail": None,
+                    "object": "Acme",
+                    "object_kind": "org",
+                    "support_kind": "verbatim",
+                    "confidence": 0.9,
+                },
+            ]
+        }
+        eid = _seed_inprogress(content="I met Jim who works at Acme.")
+
+        outcome = handle_notification(eid, extract=lambda **_k: claims)
+
+        assert outcome["status"] == "complete"
+        assert outcome["claims_inserted"] == 1  # only the (Jim, works_at, Acme) claim
+        assert outcome["claims_skipped_self"] == 1  # (I, knows, Jim) dropped
+
+        with connection.cursor() as cur:
+            cur.execute(
+                "select count(*) from brain.entities "
+                "where kind = 'person'::brain.entity_kind and lower(canonical_name) = 'i'"
+            )
+            assert cur.fetchone()[0] == 0
+            # The legitimate third-party claim survived.
+            cur.execute(
+                "select c.predicate "
+                "from brain.claims c "
+                "join brain.claim_sources cs on cs.claim_id = c.id "
+                "where cs.experience_id = %s::uuid",
+                [eid],
+            )
+            assert cur.fetchall() == [("works_at",)]
+
     def test_skips_when_not_in_progress(self):
         # A bare 'pending' row was never claimed by the cron proc.
         eid = str(uuid.uuid4())

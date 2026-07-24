@@ -69,6 +69,7 @@ CLAIM_SYSTEM_PROMPT = "\n".join(
         '- "inferred": ANY chained or compound claim. If the source says "she knows C from the accelerator, which accepted Fernworks", the claim "(B, knows, C)" is inferred — the source asserts a chain, not the atomic relation. Compound claims of the form "X from Y, who did Z" must be marked inferred for every derived triple.',
         "- If unsure, prefer inferred + low confidence (<0.6) over verbatim.",
         "- Never invent a fact the source does not support. Empty claims array is a valid output.",
+        '- The note is written by the user in the first person. Do NOT emit claims whose subject or object is the user themselves ("I", "me", "my", "myself", "the user", or plural "we"/"us"/"our"). A self-only fact ("I prefer fish shell") is out of scope for now — skip it. Still extract claims about OTHER people and things mentioned ("I met Jim" yields facts about Jim, not about "I").',
         "",
         'Entity-kind rules:',
         '- "animal": a specific named animal or pet ("Roger the dog", "the cat Mochi"). Use it for the animal itself, not for the species as a concept.',
