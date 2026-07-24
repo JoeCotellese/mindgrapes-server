@@ -56,6 +56,14 @@ def test_parse_claims_rejects_unknown_kind():
         parse_claims({"claims": [_claim(subject_kind="alien")]})
 
 
+def test_parse_claims_accepts_animal_kind():
+    # #57: pets/animals are a first-class entity kind, not forced into 'concept'.
+    claims = parse_claims(
+        {"claims": [_claim(subject="Roger", subject_kind="animal")]}
+    )
+    assert claims[0]["subject_kind"] == "animal"
+
+
 def test_parse_claims_rejects_out_of_range_confidence():
     with pytest.raises(ClaimValidationError):
         parse_claims({"claims": [_claim(confidence=1.5)]})
