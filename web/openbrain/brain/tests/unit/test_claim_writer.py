@@ -1,9 +1,11 @@
 # ABOUTME: Unit tests for the claim writer's pure decisions (no DB).
 # ABOUTME: Pins the object literal-vs-entity policy and the accumulator.
 
+import pytest
 from openbrain.brain.services.claim_writer import (
     MATCH_THRESHOLD,
     _object_should_be_literal,
+    is_owner_self_reference,
     new_accumulator,
 )
 
@@ -62,4 +64,26 @@ def test_new_accumulator_shape():
         "claim_sources_inserted": 0,
         "entities_created_for_objects": 0,
         "literal_objects_fell_back": 0,
+        "claims_skipped_self": 0,
     }
+
+
+# #56: first-person subjects/objects must NOT mint a junk entity named "I".
+@pytest.mark.parametrize(
+    "name",
+    ["I", "i", "me", "My", "mine", "myself", "the user", "  Me  ", "I.", '"me"', "I,",
+     "we", "We", "us", "our", "ours", "ourselves"],
+)
+def test_is_owner_self_reference_true(name):
+    assert is_owner_self_reference(name) is True
+
+
+@pytest.mark.parametrize(
+    # No false positives: real names, and multi-word phrases that merely start
+    # with a pronoun ("my team" is a real thing to remember, not the owner).
+    "name",
+    ["Ian", "Mimi", "my team", "my dog Roger", "our team", "Ines", "user", "Miles",
+     "", "  "],
+)
+def test_is_owner_self_reference_false(name):
+    assert is_owner_self_reference(name) is False
