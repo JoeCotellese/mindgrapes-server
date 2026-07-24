@@ -181,6 +181,26 @@ def _string_list(raw: str) -> list[str]:
     return [part.strip() for part in text.split(",") if part.strip()]
 
 
+def _normalize_people(parsed) -> list[dict] | None:
+    """Validate a parsed people list into the resolver's [{name, ...}] shape.
+
+    Shared by the multipart door (via _participants, after JSON parsing) and the
+    JSON note door (which already holds a native list). A nameless or blank-named
+    object is a 400 here, not a KeyError three layers down where the resolver
+    reads p["name"].
+    """
+    if not isinstance(parsed, list):
+        raise ValueError("people must be a JSON list")
+    people = []
+    for item in parsed:
+        person = item if isinstance(item, dict) else {"name": item}
+        name = person.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("each person needs a non-empty name")
+        people.append({**person, "name": name.strip()})
+    return people or None
+
+
 def _participants(raw: str) -> list[dict] | None:
     """People present, as the resolver wants them: a list of {name: ...} dicts.
 
@@ -196,20 +216,8 @@ def _participants(raw: str) -> list[dict] | None:
             parsed = json.loads(text)
         except ValueError as exc:
             raise ValueError(f"invalid people JSON: {exc}") from exc
-        if not isinstance(parsed, list):
-            raise ValueError("people must be a JSON list")
-        people = []
-        for item in parsed:
-            person = item if isinstance(item, dict) else {"name": item}
-            name = person.get("name")
-            # The resolver reads p["name"]; a nameless object is a 400, not a
-            # KeyError three layers down.
-            if not isinstance(name, str) or not name.strip():
-                raise ValueError("each person needs a non-empty name")
-            people.append({**person, "name": name.strip()})
-    else:
-        people = [{"name": name} for name in _string_list(text)]
-    return people or None
+        return _normalize_people(parsed)
+    return [{"name": name} for name in _string_list(text)] or None
 
 
 def _occurred_at(raw: str) -> str | None:
@@ -332,3 +340,95 @@ def capture_image_api(request):
             "byte_len": result["byte_len"],
         }
     )
+
+
+def _note_fields(payload: dict) -> dict:
+    """Parse the JSON note body into capture() kwargs.
+
+    Sibling of _image_fields, but the values arrive JSON-native (numbers, lists)
+    rather than as multipart strings, so lat/lng are stringified into _location
+    to reuse its finite/range/both-or-neither validation, and people/labels are
+    validated as the lists they already are. Raises ValueError on anything
+    malformed so the caller answers 400 rather than silently dropping a field.
+    """
+    visibility = payload.get("visibility") or "private"
+    if visibility not in _ALLOWED_VISIBILITY:
+        raise ValueError(f"visibility must be one of {_ALLOWED_VISIBILITY}")
+
+    people = payload.get("people")
+    participants = _normalize_people(people) if people is not None else None
+
+    labels_raw = payload.get("labels")
+    if labels_raw is not None and not isinstance(labels_raw, list):
+        raise ValueError("labels must be a list")
+    labels = [str(v).strip() for v in (labels_raw or []) if str(v).strip()]
+
+    # lat/lng ride in as JSON numbers; str() round-trips them losslessly into
+    # _location, which owns the finite/range/both-or-neither checks.
+    loc = _location(
+        {
+            "lat": "" if payload.get("lat") is None else str(payload["lat"]),
+            "lng": "" if payload.get("lng") is None else str(payload["lng"]),
+        }
+    )
+    return {
+        "occurred_at": _occurred_at(payload.get("occurred_at") or ""),
+        "visibility": visibility,
+        "participants": participants,
+        "lat": loc["lat"] if loc else None,
+        "lng": loc["lng"] if loc else None,
+        "metadata_extra": {"labels": labels} if labels else None,
+    }
+
+
+@csrf_exempt
+@cors
+def capture_note_api(request):
+    """File a typed note from the app: JSON in, experience out.
+
+    Auth is capture_api's exactly — a bearer OAuth token, no session cookie
+    (hence csrf_exempt), with `cors` answering the app's preflight. Unlike
+    capture_api (#35) there is no URL and no summarization: the app posts a note
+    the user typed, stored through the shared capture() write service as a manual
+    experience whose content is the note verbatim. source_kind="manual" takes
+    capture()'s structured path (no LLM metadata extraction), and client="app"
+    lands in metadata.source.
+    """
+    if request.method != "POST":
+        return JsonResponse({"error": "method not allowed"}, status=405)
+    sub = _verify_bearer(request)
+    if sub is None:
+        return JsonResponse({"error": "unauthorized"}, status=401)
+    try:
+        payload = json.loads(request.body or b"{}")
+    except (ValueError, TypeError):
+        return JsonResponse({"error": "invalid json"}, status=400)
+    if not isinstance(payload, dict):
+        # Valid JSON but not an object (a list/scalar body) — .get would crash.
+        return JsonResponse({"error": "invalid json"}, status=400)
+
+    content = payload.get("content")
+    # A numeric/None content would AttributeError on .strip(); reject up front.
+    if not isinstance(content, str) or not content.strip():
+        return JsonResponse({"error": "content required"}, status=400)
+
+    try:
+        fields = _note_fields(payload)
+    except ValueError as exc:
+        return JsonResponse({"error": str(exc)}, status=400)
+
+    try:
+        result = captures.capture(
+            content=content.strip(),
+            owner=sub,
+            account_id=settings.BRAIN_HOUSEHOLD_ACCOUNT_ID,
+            source_kind="manual",
+            client="app",
+            **fields,
+        )
+    except EmbeddingError:
+        # The embedding hop is down; nothing was written. Mirrors capture_api's
+        # 502 so the app retries instead of showing an HTML error page.
+        return JsonResponse({"error": "embedding service unavailable"}, status=502)
+
+    return JsonResponse({"experience_id": result["experience_id"]})
