@@ -80,6 +80,14 @@ Then:
 - `http://localhost:8080/mcp` → the Python MCP server (401 auth gate when unauthenticated)
 - `http://localhost:8025/` → mailpit (catches enrollment emails in later slices)
 - `127.0.0.1:5433` → the dev Postgres (`openbrain_dev`)
+- `http://localhost:9100` → minio S3 API (attachment blobs, #42)
+- `http://localhost:9101` → minio console (`devminio` / `devminiopassword`)
+
+The dev stack runs the **real** S3 backend, not the in-memory fake, so the image
+path is exercised end to end locally. `S3_ENDPOINT` is `http://minio:9000` (what
+the containers use) while `S3_PUBLIC_ENDPOINT` is `http://localhost:9100` (what
+your browser fetches presigned URLs from) — they differ because SigV4 signs the
+Host header. Both are set inline in `docker-compose.dev.yml`.
 
 The `web` image runs `uvicorn --reload`; the source is bind-mounted, so editing
 a view or template reflects without a rebuild. Migrations apply automatically on
@@ -99,8 +107,9 @@ whatever the live `.env` contains.
 |---|---|---|
 | Compose project | `openbrain` | `openbrain-dev` |
 | Postgres volume | `pgdata` | `pgdata_dev` |
+| Blob volume | `miniodata` | `miniodata_dev` |
 | DB name | `openbrain` | `openbrain_dev` |
-| Host ports | `5432`, `80`, `443` | `5433`, `8080`, `8025` |
+| Host ports | `5432`, `80`, `443`, `9000` | `5433`, `8080`, `8025`, `9100`, `9101` |
 | Container names | `openbrain-*` | `openbrain-dev-*` |
 | Env file | `.env` | `.env.dev` |
 | `./backups` mount | yes (rw) | none |
@@ -299,6 +308,15 @@ Differences from the Tailscale recipe above:
   internet.
 - Point a public **DNS A/AAAA record** at the host, and open **80 + 443** inbound.
   Port 80 must be reachable for the HTTP-01 ACME challenge.
+- Set `ATTACHMENTS_BIND_ADDR=127.0.0.1`. This box is directly on the internet and
+  there is no tailnet to scope minio's S3 API to, so bind it to loopback.
+  Compose has no default for this and will refuse to start without it. Do not
+  rely on the firewall here: Docker publishes ports by writing into the `DOCKER`
+  iptables chain, which is evaluated **before** a `ufw` INPUT policy, so a
+  published `0.0.0.0:9000` stays reachable even after you "open only 80 + 443".
+  If you do want off-host attachment reads on this recipe, bind an interface you
+  have actually firewalled and verify from outside with
+  `nmap -Pn -p 9000 <host>` — expect `filtered`/`closed`.
 - Set the hostname env vars to your real domain (Caddy binds its TLS edge to
   `BRAIN_HOSTNAME`, so it must be the public name, not `localhost`):
 
@@ -390,7 +408,171 @@ anonymous-row-creation concern, the durable fix (gate + rate-limit + table
 hygiene) is tracked in #79 — it is intentionally not closeable via an env
 flag today.
 
+## Attachments: images in the brain (#42)
+
+Image blobs do **not** live in Postgres. A `minio` service holds them in its own
+volume; Postgres holds only `brain.blobs` / `brain.attachments` rows pointing at
+object keys. Two consequences to internalise before you deploy this: `pg_dump` is
+no longer a whole-brain backup, and there is a second address the deployment has
+to get right.
+
+Two doors write images, one engine behind them
+(`web/openbrain/brain/services/image_captures.py`):
+
+- `POST /capture/image` — the app. Bearer-authed multipart, takes a
+  full-resolution photo, rejects oversize on `Content-Length` before any decode.
+- the `capture_image` MCP tool — an LLM client pasting a screenshot, base64
+  capped at 256KB.
+
+Both re-encode to a bounded WebP, content-address it by the sha256 of the
+original bytes (so the same photo captured twice stores one object), promote EXIF
+time/GPS, and link event/place entities.
+
+### The one thing that breaks deployments: `S3_PUBLIC_ENDPOINT`
+
+The server reaches minio over the compose network at `http://minio:9000`. A
+client fetching a presigned URL reaches it at the tailnet host. **SigV4 signs the
+Host header**, so a URL minted against the internal address fails with
+`403 SignatureDoesNotMatch` the moment the app fetches it — the object is there,
+the credentials are right, and it still 403s. That is why the endpoint is split:
+
+- `S3_ENDPOINT` — in-network, set inline by compose. Used for put/get/head.
+- `S3_PUBLIC_ENDPOINT` — the address the **client** uses. Presigned URLs only.
+
+Set it to the tailnet host, including the port:
+
+```sh
+S3_PUBLIC_ENDPOINT=http://<machine>.<tailnet>.ts.net:9000
+```
+
+The same rule kills the tidier-looking topology, so don't reach for it: a Caddy
+`handle_path /attachments/*` that strips the prefix invalidates every signature,
+because SigV4 signs the request **path** as well as the host. Minio is therefore
+served at the **root** of its own listener (the `:9000` block in
+`caddy/Caddyfile`), not under a path prefix. If you want a prefix anyway, the
+signature has to be computed over the same prefixed path the proxy forwards —
+strip nothing.
+
+How far that listener reaches is decided by `ATTACHMENTS_BIND_ADDR`, which
+compose requires you to set (there is no default — an unset value fails the
+`docker compose up` with a message). `tailscale/serve.json` publishes `:443`
+(and Funnel) to `caddy:80` and does not publish `:9000`, which keeps attachments
+off Funnel — but serve.json does not bind the host's own interfaces, so it is
+not what keeps `:9000` off the public internet. Set the bind address to the
+tailnet IP (`tailscale ip -4`) for tailnet clients, or `127.0.0.1` when nothing
+off-host reads attachments. It also refuses anything but GET/HEAD — uploads go through the app,
+which owns auth, the size ceiling, and the decode check. Authorization for a read
+is the presigned URL itself: a short-TTL bearer minted only after the viewer
+passed `can_viewer_read`. It cannot be revoked once minted (no clawback, per
+#48); the TTL is the bound.
+
+### Deploying it
+
+```sh
+# 1. .env keys (see .env.example for the annotated block):
+#      S3_ACCESS_KEY / S3_SECRET_KEY   generate: openssl rand -hex 16
+#                                      minio boots with these as its root user,
+#                                      so changing them later is a minio-side
+#                                      user change, not just an .env edit
+#      S3_BUCKET=brain-attachments
+#      S3_REGION=us-east-1
+#      S3_PUBLIC_ENDPOINT=http://<machine>.<tailnet>.ts.net:9000
+#      ATTACHMENTS_BIND_ADDR           REQUIRED, no default. The tailnet IP
+#                                      (`tailscale ip -4`), or 127.0.0.1 when
+#                                      nothing off-host reads attachments
+#      MAX_IMAGE_UPLOAD_BYTES          optional, default 12582912 (12MB)
+#    BLOBSTORE_BACKEND and S3_ENDPOINT are set inline by compose — leave them out.
+
+# 2. Rebuild the image. #42 added Pillow, pillow-heif, and boto3; a stale image
+#    boots fine and then fails at the first capture.
+docker compose build web
+docker compose up -d
+
+# 3. Apply the brain schema delta (brain.blobs / brain.attachments live in
+#    init/18 + init/19; an existing volume does not get them from init/).
+docker compose exec mcp python manage.py brain_ledger migrate
+# Expect: [migrate] applied 18-... , 19-...   (or "already up to date")
+
+# 4. Confirm the bucket exists (minio-init creates it, then exits 0).
+docker compose logs minio-init
+# Expect: bucket brain-attachments ready
+```
+
+If you raise `MAX_IMAGE_UPLOAD_BYTES`, raise the matching cap in
+`caddy/Caddyfile` too — the `/capture/image` handler caps bodies at 13MB so the
+413 comes from Django (which can say what the limit is) rather than from Caddy.
+
+### Success condition
+
+The whole feature is working when this round-trips on the tailnet:
+
+1. The app POSTs a photo to
+   `https://<machine>.<tailnet>.ts.net/capture/image` with a bearer token and a
+   multipart `image` part. Expect `200` and a JSON body with `experience_id`,
+   `attachment_id`, `object_key`, `byte_len`.
+2. The object is really in minio. The container's built-in `local` alias has no
+   credentials (it only backs the healthcheck's `mc ready local`), so set an
+   authenticated alias first — `mc ls local/...` alone returns *Access Denied*:
+
+   ```sh
+   docker compose exec minio sh -c \
+     'mc alias set me http://127.0.0.1:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null
+      mc ls --recursive me/brain-attachments | tail'
+   # Expect: <account_id>/<sha256>.webp, byte size matching the POST response.
+   ```
+
+3. `get_experience` on that id returns an `attachment` block, and its
+   `presigned_url` **renders in a browser on the tailnet**. A 403 here means
+   `S3_PUBLIC_ENDPOINT` doesn't match the host you fetched from; a 404 means the
+   put failed but the row was written (run the orphan reconciliation).
+
+Curl version of step 1, from a tailnet machine:
+
+```sh
+curl -s -X POST https://<machine>.<tailnet>.ts.net/capture/image \
+  -H "Authorization: Bearer $TOKEN" \
+  -F "image=@/path/to/photo.jpg" \
+  -F "description=the whiteboard after the design review" \
+  -F "visibility=private"
+# Expect: {"experience_id": "...", "attachment_id": "...", "object_key": "...", ...}
+```
+
+### Backing up the blobs
+
+**`pg_dump` does not back up attachments.** It captures the rows that reference
+objects, so a restore from Postgres alone gives you a brain whose images are all
+broken links. The `miniodata` volume is a separate backup target:
+
+Snapshot the volume, then let restic pick the tarball up alongside the `pg_dump`
+(see the backup section below). The volume is named `<project>_miniodata`, and
+the compose project name comes from the checkout directory — so look it up
+rather than hardcoding it:
+
+```sh
+VOL=$(docker volume ls --format '{{.Name}}' | grep miniodata$)
+docker run --rm -v "$VOL":/data:ro -v "$PWD/backups:/out" \
+  alpine tar czf /out/miniodata-$(date +%F).tar.gz -C /data .
+```
+
+Restore is the same move in reverse, with the stack down:
+
+```sh
+docker compose stop minio
+docker run --rm -v "$VOL":/data -v "$PWD/backups:/in" \
+  alpine sh -c 'rm -rf /data/* && tar xzf /in/miniodata-<date>.tar.gz -C /data'
+docker compose start minio
+```
+
+Restoring Postgres to an older snapshot than the blob store is safe (extra
+objects are orphans, which the reconciliation in
+`image_captures.orphan_blob_keys` reports). The reverse — blobs older than the
+database — leaves dangling attachment rows. Snapshot the blobs **after** the
+`pg_dump`, not before.
+
 ## Backups & restore (#90)
+
+> **Scope:** this covers Postgres only. Attachment blobs live in the `miniodata`
+> volume and need their own snapshot — see "Backing up the blobs" above.
 
 `pg_dump` produces a consistent logical snapshot; **restic** wraps it
 (encryption + dedup + retention) and pushes it offsite to **Backblaze B2**.
@@ -555,3 +737,52 @@ entry to `SPINE` in `web/openbrain/mcp/boot.py`; (3) add the matching row to the
   sessions survive an mcp container restart (cookies still valid; JWTs
   outlive the process); Caddy's cert cache lives in the `caddy-data`
   volume so a Caddy restart doesn't re-request a cert.
+
+## Object storage for attachments (images, #42)
+
+`capture_image` stores a bounded WebP derivative of each image in S3-compatible
+object storage; the DB holds only `brain.attachments` (experience→blob links) and
+`brain.blobs` (content-addressed object records). Config (`.env`, gitignored,
+never committed):
+
+- `BLOBSTORE_BACKEND=s3` (default `memory`, which the unit suite uses).
+- `S3_ENDPOINT` (e.g. a minio or Hetzner Object Storage URL), `S3_BUCKET`,
+  `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_REGION`. These are pinned to server
+  config only — never derived from a request or from EXIF. The client uses
+  path-style addressing so a minio endpoint works without per-bucket DNS.
+
+### Presigned reads (bearer tokens, no clawback)
+
+`get_experience` mints a short-TTL (~60s) presigned GET URL only after the viewer
+read check passes. The signed URL is a **bearer token**: it is regenerated on
+every call, is never logged or persisted (we log the `object_key`), and — per the
+supersede/no-clawback rule (#48) — an already-minted URL keeps working until it
+expires even if the item is later un-shared. The short TTL is the only bound.
+`mime/width/height/byte_len` live on the row so display needs no S3 round-trip.
+
+### Vision egress (cross-boundary, opt-in)
+
+When an image has no caller description, a `'shared'` capture is described by a
+third-party vision model (OpenRouter) — the derivative image bytes leave the
+host. A `'private'`/default capture is **never** egressed: it fails closed to a
+deterministic placeholder and a `description_pending` flag for a later
+re-description pass. This is the only path that sends image bytes off-box.
+
+### Backup (object bucket is a second backup surface)
+
+`pg_dump` does NOT capture the bucket. A DB-only restore that lost the bucket
+leaves every attachment row pointing at a missing object. Treat the bucket as a
+first-class backup surface: mirror it (restic / `mc mirror`) on the same schedule
+as the DB dump, add `brain.attachments` + `brain.blobs` to the restore-drill
+counts, and HEAD a sample of `object_key`s in the drill so a lost bucket FAILS
+the drill instead of passing silently. (Wiring the mirror into `backup.sh` + the
+systemd unit is a tracked follow-up.)
+
+### GC of orphan blobs (follow-up)
+
+Deleting an experience cascades its `attachments` row but leaves the shared blob
+(other experiences may reference it). A blob is reap-eligible only when zero live
+attachments reference its `blob_id` AND its object is older than a grace horizon
+(>=24h, safely past the longest capture). The reaper itself is a scoped
+follow-up; the orphan-detection reconciliation (`image_captures.orphan_blob_keys`)
+and its integration test ship now.

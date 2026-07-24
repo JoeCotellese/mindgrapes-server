@@ -42,7 +42,9 @@ _SELECT_SQL = """
            source_ref,
            owner,
            account_id,
-           visibility::text as visibility
+           visibility::text as visibility,
+           lat,
+           lng
       from brain.experiences
      where id = %s::uuid
      for update
@@ -70,11 +72,13 @@ _UPDATE_CONTENT_INPLACE_SQL = """
 
 # The superseding row inherits owner/account_id/visibility verbatim (#85) so a
 # content edit never silently re-privatizes a shared item or orphans ownership.
+# lat/lng (#43) carry forward the same way: editing a caption must not orphan the
+# geotag from the map, since only the live row is mappable.
 _INSERT_SUPERSEDING_SQL = """
     insert into brain.experiences (
         captured_at, occurred_at, source_kind, source_ref,
         content, embedding, metadata, consolidation_status,
-        owner, account_id, visibility
+        owner, account_id, visibility, lat, lng
     ) values (
         now(),
         %s::timestamptz,
@@ -86,7 +90,9 @@ _INSERT_SUPERSEDING_SQL = """
         'pending'::brain.consolidation_status,
         %s,
         %s,
-        %s::brain.visibility
+        %s::brain.visibility,
+        %s,
+        %s
     )
     returning id::text as id
 """
@@ -95,6 +101,17 @@ _SET_SUPERSEDED_BY_SQL = """
     update brain.experiences
        set superseded_by = %s::uuid
      where id = %s::uuid
+"""
+
+# Carry attachments forward onto the superseding row (#42). match_brain_hybrid
+# surfaces only the live row, so without this a caption edit would orphan the
+# image from search the instant the old row supersedes. Cheap: the blob is shared
+# by blob_id, so this copies only the link (new attachment id, same blob).
+_CARRY_ATTACHMENTS_SQL = """
+    insert into brain.attachments (experience_id, blob_id, width, height)
+    select %s::uuid, blob_id, width, height
+      from brain.attachments
+     where experience_id = %s::uuid
 """
 
 _CLAIM_SOURCES_BY_KIND_SQL = """
@@ -257,11 +274,14 @@ def _supersede(
             before["owner"],
             before["account_id"],
             before["visibility"],
+            before["lat"],
+            before["lng"],
         ],
     )
     new_id = dictfetchall(cursor)[0]["id"]
     result["new_id"] = new_id
     cursor.execute(_SET_SUPERSEDED_BY_SQL, [new_id, experience_id])
+    cursor.execute(_CARRY_ATTACHMENTS_SQL, [new_id, experience_id])
 
     cursor.execute(_CLAIM_SOURCES_BY_KIND_SQL, [experience_id])
     auto_retract = []

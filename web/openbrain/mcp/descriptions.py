@@ -58,10 +58,29 @@ On empty result: found=false means the id does not exist OR it is private and no
 
 Lifecycle: superseded and soft-deleted experiences still resolve (so an audit deep-link loads), flagged is_live=false; live rows are is_live=true.
 
-Cost: low (three indexed SQL lookups by primary/foreign key, no embedding call).
-Idempotent: yes.
+Attachments (#42): when the experience has an attachment, the result carries an optional top-level `attachment` block {presigned_url, mime, width, height, byte_len} (absent/None otherwise). The presigned_url is a short-lived (~60s) bearer URL, REGENERATED on every call — do not cache or persist it, and expect a fresh value each read. mime/width/height/byte_len come off the row, so you can render metadata without fetching bytes. Un-share cannot revoke a URL already handed out (no clawback, per #48); the short TTL is the only bound. The block is minted only after the viewer read check passes — a row you can't read returns found=false with no attachment.
+
+Cost: low (indexed SQL lookups by primary/foreign key, no embedding call; one presign computation when an attachment exists).
+Idempotent: yes (though the presigned_url differs each call by design).
 Reversible: N/A (read-only).
 Side effects: none — unlike search_thoughts / recall_recent, this does not write a brain.recall_events row."""
+
+CAPTURE_IMAGE = """Save an image as a first-class, searchable experience backed by a bounded WebP derivative in object storage. The image's `content` is a text description (caller-supplied is primary; a vision fallback covers the textless case only for 'shared' captures), so existing search_thoughts / recall_recent / who_was_at surface it with no new retrieval code. Location (params beat EXIF), an optional `event`, and `participants` are linked as entities so "what happened at <event>" and "in <place>" return the image. Routes through the same write path as capture_thought (owner/visibility stamping, participant resolution, needs_disambiguation) — it is capture_thought for pixels, not a parallel path.
+
+Two intake shapes, supply exactly one:
+- `image_base64` — SMALL pasted screenshots only, hard ceiling 256KB of base64 (a 1MB photo is ~350k tokens, uncallable). The server decodes, validates, re-encodes to <=1024px WebP, and uploads.
+- `object_key` (+ `original_sha256`, `mime`, `width`, `height`) — the durable app path: the app already uploaded the derivative via a presigned S3 PUT, so no bytes cross the tool boundary. PREFER this for real photos.
+
+Description derivation: pass `description` whenever the device/app has one (on-device OCR + labels are the best describer). `ocr` text is folded into the embedded content ("Detected text: ...") so a receipt/whiteboard is searchable, with the raw copy kept in `metadata`. With NO description: a 'shared' image is described by the third-party vision model; a 'private'/default image is NEVER egressed — it fails closed to a deterministic placeholder ("[image captured ..., description pending]") and is flagged for a later re-description pass.
+
+Use when: the caller has an image worth remembering (a photo of an event, a screenshot, a whiteboard, a receipt) and wants it recallable alongside text memories.
+Don't use when: the content is textual (use capture_thought), the same image is already captured (identity is the sha256 of the original bytes — a re-capture dedupes to one stored blob), or you'd need to base64 a large photo (use the presigned-PUT object_key path instead).
+On empty result: N/A (this is a write).
+
+Cost: medium-high (image decode + re-encode, one embedding call, an S3 put, and — only for a description-less 'shared' image — a slower third-party vision call).
+Idempotent: no (each call writes a new experience + attachment row); the underlying blob is content-addressed, so repeated captures of the same bytes share one stored object.
+Reversible: partially — like capture_thought, occurred_at/metadata/visibility are editable via update_experience and content edits supersede (the attachment carries forward). Deleting the experience cascades its attachment; the shared blob survives until the GC reaper (a follow-up) reaps it.
+Side effects: writes brain.experiences + brain.attachments + brain.blobs and uploads an object to S3. For a description-less 'shared' capture ONLY, sends the (derivative) image bytes to a third-party vision model — a cross-boundary egress documented in docs/deploy.md; private captures never egress."""
 
 CAPTURE_THOUGHT = """Save a new experience to the brain. Bare form (just `content`) generates an embedding and runs server-side LLM metadata extraction synchronously. Structured form (any of occurred_at / participants / predicate_hints / source_kind / source_ref) skips LLM extraction for the provided fields, resolves participants to brain.entities synchronously, and returns the new experience_id plus per-participant entity info. Claim extraction always runs asynchronously via pg_cron. An optional `visibility` ('private' default — only the owner; 'shared' — readable by other household members) sets who can read it; every capture is stamped with the authenticated member as owner.
 

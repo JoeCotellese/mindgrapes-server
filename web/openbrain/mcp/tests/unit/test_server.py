@@ -493,6 +493,7 @@ def test_all_tools_and_resources_registered():
         "thought_stats",
         "get_experience",
         "capture_thought",
+        "capture_image",
         # Slice C — entity repair + recall
         "merge_entities",
         "rename_entity",

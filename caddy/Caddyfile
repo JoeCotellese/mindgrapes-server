@@ -58,8 +58,31 @@
 
 	# Cap request bodies. OAuth POSTs are KiB-scale; MCP JSON-RPC fits under
 	# 1 MiB. Larger uploads are an abuse signal.
-	request_body {
+	#
+	# The matcher is load-bearing, NOT decoration: `request_body` sorts ahead of
+	# `handle` in Caddy's directive order, so an unmatched site-level cap wraps
+	# EVERY request in a 1MB MaxBytesReader — including the photo intake below,
+	# whose own 13MB cap would then be the inner (never-reached) reader. Exclude
+	# /capture/image here so its carve-out is the only cap on that path.
+	@capped not path /capture/image
+	request_body @capped {
 		max_size 1MB
+	}
+
+	# ...except the app's photo intake (#42), which carries a full-resolution
+	# camera image. Kept slightly above the app's own ceiling
+	# (settings.MAX_IMAGE_UPLOAD_BYTES, default 12MB) so the JSON 413 comes from
+	# Django — which knows the limit and can say so — rather than a bare Caddy
+	# 413. Raising this without raising MAX_IMAGE_UPLOAD_BYTES changes nothing:
+	# Django still rejects on `.size` before any decode.
+	handle /capture/image {
+		request_body {
+			max_size 13MB
+		}
+		reverse_proxy web:8000 {
+			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-Proto https
+		}
 	}
 
 	# /mcp + RS metadata -> Python MCP service. FastMCP's RemoteAuthProvider
@@ -110,4 +133,46 @@
 {$BRAIN_HOSTNAME:localhost} {
 	tls internal
 	import brain_split
+}
+
+# Attachment reads (#42): minio's S3 API, on its own listener at the ROOT path.
+#
+# Root-mounted deliberately. A tidier-looking `handle_path /attachments/*` on the
+# main edge does NOT work: SigV4 signs the request path, so stripping a prefix
+# invalidates every presigned URL and minio answers 403 SignatureDoesNotMatch.
+# Keeping minio at "/" means the path boto3 signed is the path minio receives.
+#
+# How far this listener reaches is decided on the HOST, by ATTACHMENTS_BIND_ADDR
+# (docker-compose.yml) — set it to the tailnet IP, or 127.0.0.1 for same-host
+# only. serve.json publishing :443/Funnel -> caddy:80 and not :9000 keeps
+# attachments off Funnel; it does NOT bind the host's own interfaces, so it is
+# not on its own what keeps them off the public internet. Authorization is the
+# presigned URL itself: a short-TTL bearer minted only after can_viewer_read
+# passed (brain/services/reads.py); the bind address is what keeps a leaked one
+# redeemable from the tailnet rather than from anywhere.
+:9000 {
+	log {
+		output stdout
+		format filter {
+			wrap json
+			fields {
+				# The query string IS the credential here — never log it.
+				request>uri regexp "[?].*" ""
+				request>headers>Authorization delete
+				request>headers>Cookie delete
+			}
+		}
+	}
+
+	header -Server
+
+	# GET/HEAD only: uploads go through the app (POST /capture/image), which
+	# owns auth, the size ceiling, and the decode check. Nothing should be able
+	# to write to the bucket through this door.
+	@writes not method GET HEAD OPTIONS
+	respond @writes "method not allowed" 405
+
+	reverse_proxy minio:9000 {
+		header_up X-Real-IP {remote_host}
+	}
 }

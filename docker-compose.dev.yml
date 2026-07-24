@@ -8,8 +8,10 @@
 #
 #   project name : openbrain-dev   (namespaces network + volumes)
 #   pg volume    : pgdata_dev       (physically separate from live pgdata)
+#   minio volume : miniodata_dev    (attachment blobs; separate from live)
 #   db name      : openbrain_dev
-#   host ports   : 5433 / 8080 / 8025  (no collision with live 5432/80/443)
+#   host ports   : 5433 / 8080 / 8025 / 9100 / 9101
+#                  (no collision with live 5432/80/443)
 #   containers   : openbrain-dev-*
 #
 # One-time setup:  cp .env.dev.example .env.dev
@@ -45,6 +47,45 @@ services:
       timeout: 5s
       retries: 5
 
+  # Object store for attachment blobs (#42). The official minio image is
+  # multi-arch, so it runs natively on an Apple Silicon dev host. Credentials are
+  # hardcoded dev literals, like devpassword above — this stack never holds real
+  # data, and hardcoding keeps it immune to whatever the live .env contains.
+  minio:
+    image: minio/minio:latest
+    container_name: openbrain-dev-minio
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9100:9000"  # S3 API — what S3_PUBLIC_ENDPOINT points at
+      - "127.0.0.1:9101:9001"  # web console, for eyeballing stored objects
+    environment:
+      MINIO_ROOT_USER: devminio
+      MINIO_ROOT_PASSWORD: devminiopassword
+    command: server /data --console-address ":9001"
+    volumes:
+      - miniodata_dev:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # One-shot bucket create, then exit 0. web/mcp gate on its SUCCESSFUL
+  # completion, so a put never races an absent bucket on a fresh volume.
+  minio-init:
+    image: minio/mc:latest
+    container_name: openbrain-dev-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint:
+      - sh
+      - -c
+      - >
+        mc alias set dev http://minio:9000 devminio devminiopassword &&
+        mc mb --ignore-existing dev/brain-attachments &&
+        echo "bucket brain-attachments ready"
+
   web:
     build:
       context: ./web
@@ -55,7 +96,9 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    # Django secrets/config from .env.dev; DB + email wiring inline.
+      minio-init:
+        condition: service_completed_successfully
+    # Django secrets/config from .env.dev; DB + email + blobstore wiring inline.
     env_file:
       - .env.dev
     environment:
@@ -63,6 +106,17 @@ services:
       DATABASE_URL: postgres://openbrain:devpassword@postgres:5432/openbrain_dev
       EMAIL_HOST: mailpit
       EMAIL_PORT: "1025"
+      # Split endpoints: the container puts/gets over the compose network, but a
+      # presigned URL is fetched by a BROWSER ON THE HOST. SigV4 signs the Host
+      # header, so the two addresses must be declared separately or the fetch
+      # 403s. See openbrain/brain/services/blobstore.py.
+      BLOBSTORE_BACKEND: s3
+      S3_ENDPOINT: http://minio:9000
+      S3_PUBLIC_ENDPOINT: http://localhost:9100
+      S3_BUCKET: brain-attachments
+      S3_ACCESS_KEY: devminio
+      S3_SECRET_KEY: devminiopassword
+      S3_REGION: us-east-1
     volumes:
       - ./web:/app
       - /app/.venv  # mask the host venv (wrong platform inside the container)
@@ -92,6 +146,8 @@ services:
         condition: service_healthy
       web:
         condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
     env_file:
       - .env.dev
     environment:
@@ -99,6 +155,15 @@ services:
       DATABASE_URL: postgres://openbrain:devpassword@postgres:5432/openbrain_dev
       OAUTH_JWKS_URL: http://web:8000/oauth/jwks.json
       MCP_PATH: /mcp/
+      # Same split-endpoint wiring as web — the MCP capture_image tool writes
+      # blobs through the identical seam.
+      BLOBSTORE_BACKEND: s3
+      S3_ENDPOINT: http://minio:9000
+      S3_PUBLIC_ENDPOINT: http://localhost:9100
+      S3_BUCKET: brain-attachments
+      S3_ACCESS_KEY: devminio
+      S3_SECRET_KEY: devminiopassword
+      S3_REGION: us-east-1
     volumes:
       - ./web:/app
       - /app/.venv  # mask the host venv (wrong platform inside the container)
@@ -161,5 +226,6 @@ services:
 
 volumes:
   pgdata_dev:
+  miniodata_dev:
   caddy_dev_data:
   caddy_dev_config:

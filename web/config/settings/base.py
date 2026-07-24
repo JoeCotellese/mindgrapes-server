@@ -216,3 +216,28 @@ BRAIN_METADATA_FN = "openbrain.brain.extraction.metadata.extract_metadata"
 # household. DEFAULT_OWNER / HOUSEHOLD_ACCOUNT_ID come from the shared .env.
 BRAIN_DEFAULT_OWNER = env("DEFAULT_OWNER", default="owner")
 BRAIN_HOUSEHOLD_ACCOUNT_ID = env("HOUSEHOLD_ACCOUNT_ID", default="household")
+
+# capture_image (#42). Image blobs live in S3-compatible object storage; the
+# vision fallback describes an otherwise-textless image. Both are seams:
+# BLOBSTORE_BACKEND selects the in-memory fake (default, and what the unit suite
+# uses) vs the real S3 client; BRAIN_VISION_FN is a dotted path resolved at call
+# time so tests never egress image bytes. Production/dev-stack set backend='s3'
+# and the S3_* vars from the shared .env — never derived from a request or EXIF.
+BLOBSTORE_BACKEND = env("BLOBSTORE_BACKEND", default="memory")
+S3_ENDPOINT = env("S3_ENDPOINT", default="")
+# The address a CLIENT fetches presigned URLs from (the tailnet host), as opposed
+# to S3_ENDPOINT which is the compose-network address the server puts/gets
+# through. SigV4 signs the Host header, so a URL minted against the internal
+# endpoint 403s when fetched at the public one. Blank = same address for both.
+S3_PUBLIC_ENDPOINT = env("S3_PUBLIC_ENDPOINT", default="")
+S3_BUCKET = env("S3_BUCKET", default="brain-attachments")
+S3_ACCESS_KEY = env("S3_ACCESS_KEY", default="")
+S3_SECRET_KEY = env("S3_SECRET_KEY", default="")
+S3_REGION = env("S3_REGION", default="")
+BRAIN_VISION_FN = "openbrain.brain.vision.describe_image"
+
+# Hard ceiling on a multipart photo POSTed to /capture/image (#42 app path).
+# Enforced BEFORE any decode so an oversize body never reaches Pillow. Sized for
+# a full-resolution phone photo (HEIC/JPEG); the MCP base64 door stays far
+# smaller (image_captures.MAX_BASE64_CHARS).
+MAX_IMAGE_UPLOAD_BYTES = env.int("MAX_IMAGE_UPLOAD_BYTES", default=12 * 1024 * 1024)

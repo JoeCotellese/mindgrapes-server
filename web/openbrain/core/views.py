@@ -4,10 +4,14 @@ The walking-skeleton landing page is retired with the legacy /ui surface (#101
 Slice D); the site root is now the login-gated Brain dashboard. `capture_api`
 (#35) is the bearer-authed POST the Mind Grapes browser extension calls to
 bookmark a page: summarize the text, store it as an imported experience.
+`capture_image_api` (#42) is its sibling for pixels: the multipart POST the app
+uses to file a real photo, sharing capture_api's auth and the MCP tool's engine.
 """
 
 import json
+import math
 import warnings
+from datetime import datetime
 
 from django.conf import settings
 from django.http import HttpResponse, JsonResponse
@@ -18,11 +22,13 @@ from joserfc.errors import JoseError, SecurityWarning
 from joserfc.jwk import KeySet
 
 from openbrain.brain.embeddings import EmbeddingError
+from openbrain.brain.extraction.images import ImageDecodeError
 from openbrain.brain.extraction.openrouter_json import (
     OpenRouterJSONError,
     call_openrouter_json,
 )
-from openbrain.brain.services import captures
+from openbrain.brain.services import captures, image_captures
+from openbrain.brain.services.image_captures import ImagePayloadError
 from openbrain.oauth.cors import cors
 from openbrain.oauth.jwt import ALG, public_jwk
 
@@ -154,3 +160,175 @@ def capture_api(request):
         # can surface a retry, rather than leaking a 500 HTML page.
         return JsonResponse({"error": "summary service unavailable"}, status=502)
     return JsonResponse({"experience_id": result["experience_id"], "summary": summary})
+
+
+_ALLOWED_VISIBILITY = ("private", "shared")
+
+
+def _string_list(raw: str) -> list[str]:
+    """A multipart list field: either a JSON array or a comma-separated string."""
+    text = (raw or "").strip()
+    if not text:
+        return []
+    if text.startswith("["):
+        try:
+            parsed = json.loads(text)
+        except ValueError as exc:
+            raise ValueError(f"invalid JSON list: {exc}") from exc
+        if not isinstance(parsed, list):
+            raise ValueError("expected a JSON list")
+        return [str(v).strip() for v in parsed if str(v).strip()]
+    return [part.strip() for part in text.split(",") if part.strip()]
+
+
+def _participants(raw: str) -> list[dict] | None:
+    """People present, as the resolver wants them: a list of {name: ...} dicts.
+
+    Accepts the rich JSON form ([{"name": ..., "relationship": ...}]) so the app
+    can pass what capture_thought passes, and a bare comma-separated list for the
+    common case of a few names typed into a field.
+    """
+    text = (raw or "").strip()
+    if not text:
+        return None
+    if text.startswith("["):
+        try:
+            parsed = json.loads(text)
+        except ValueError as exc:
+            raise ValueError(f"invalid people JSON: {exc}") from exc
+        if not isinstance(parsed, list):
+            raise ValueError("people must be a JSON list")
+        people = []
+        for item in parsed:
+            person = item if isinstance(item, dict) else {"name": item}
+            name = person.get("name")
+            # The resolver reads p["name"]; a nameless object is a 400, not a
+            # KeyError three layers down.
+            if not isinstance(name, str) or not name.strip():
+                raise ValueError("each person needs a non-empty name")
+            people.append({**person, "name": name.strip()})
+    else:
+        people = [{"name": name} for name in _string_list(text)]
+    return people or None
+
+
+def _occurred_at(raw: str) -> str | None:
+    """An ISO 8601 timestamp, validated before it rides into `%s::timestamptz`."""
+    text = (raw or "").strip()
+    if not text:
+        return None
+    try:
+        datetime.fromisoformat(text)
+    except ValueError as exc:
+        raise ValueError(f"occurred_at must be an ISO 8601 timestamp ({exc})") from exc
+    return text
+
+
+def _location(post) -> dict | None:
+    """{lat, lng} from the form, or None. EXIF fills the gap when absent."""
+    lat_raw = (post.get("lat") or "").strip()
+    lng_raw = (post.get("lng") or "").strip()
+    if not lat_raw and not lng_raw:
+        return None
+    if not (lat_raw and lng_raw):
+        raise ValueError("lat and lng must be supplied together")
+    try:
+        lat, lng = float(lat_raw), float(lng_raw)
+    except ValueError as exc:
+        raise ValueError("lat/lng must be numbers") from exc
+    if not (math.isfinite(lat) and math.isfinite(lng)):
+        raise ValueError("lat/lng must be finite")
+    if not (-90.0 <= lat <= 90.0) or not (-180.0 <= lng <= 180.0):
+        raise ValueError("lat/lng out of range")
+    return {"lat": lat, "lng": lng}
+
+
+def _image_fields(post) -> dict:
+    """Parse the multipart metadata parts into capture_image kwargs.
+
+    Raises ValueError on anything malformed so the caller answers 400 rather than
+    silently dropping a field the app believed it sent.
+    """
+    visibility = (post.get("visibility") or "private").strip() or "private"
+    if visibility not in _ALLOWED_VISIBILITY:
+        raise ValueError(f"visibility must be one of {_ALLOWED_VISIBILITY}")
+    labels = _string_list(post.get("labels") or "")
+    return {
+        "description": (post.get("description") or "").strip() or None,
+        "ocr": (post.get("ocr_text") or "").strip() or None,
+        "occurred_at": _occurred_at(post.get("occurred_at") or ""),
+        "event": (post.get("event") or "").strip() or None,
+        "visibility": visibility,
+        "location": _location(post),
+        "participants": _participants(post.get("people") or ""),
+        "metadata": {"labels": labels} if labels else None,
+    }
+
+
+@csrf_exempt
+@cors
+def capture_image_api(request):
+    """File a photo from the app: multipart in, experience + attachment out.
+
+    Auth is capture_api's exactly — a bearer OAuth token, no session cookie
+    (hence csrf_exempt), with `cors` answering the app's preflight. The write
+    runs through the same image_captures service the MCP capture_image tool
+    calls, so both doors produce identical rows: bounded WebP derivative,
+    content-addressed blob, EXIF-promoted time/GPS, event/place links, and the
+    visibility-gated vision fallback.
+
+    The MCP door takes base64 under a 256KB ceiling (a screenshot pasted into an
+    LLM). This one takes multipart, so it carries a full-resolution photo — which
+    makes the size ceiling load-bearing rather than advisory: an oversize upload
+    is rejected on `.size` BEFORE the bytes are read or handed to a decoder. That
+    bounds wire bytes only, not decode cost — a byte-tiny PNG can declare
+    hundreds of megapixels — so extraction.images.MAX_PIXELS bounds the decode
+    itself from the image header. The declared Content-Type is never trusted; a
+    payload is an image only if it decodes as one.
+    """
+    if request.method != "POST":
+        return JsonResponse({"error": "method not allowed"}, status=405)
+    sub = _verify_bearer(request)
+    if sub is None:
+        return JsonResponse({"error": "unauthorized"}, status=401)
+
+    upload = request.FILES.get("image")
+    if upload is None:
+        return JsonResponse({"error": "image file part required"}, status=400)
+    max_bytes = settings.MAX_IMAGE_UPLOAD_BYTES
+    if upload.size > max_bytes:
+        return JsonResponse(
+            {"error": f"image too large ({upload.size} bytes > {max_bytes})"},
+            status=413,
+        )
+
+    try:
+        fields = _image_fields(request.POST)
+    except ValueError as exc:
+        return JsonResponse({"error": str(exc)}, status=400)
+
+    try:
+        result = image_captures.capture_image(
+            owner=sub,
+            account_id=settings.BRAIN_HOUSEHOLD_ACCOUNT_ID,
+            image_bytes=upload.read(),
+            client="app",
+            **fields,
+        )
+    except ImageDecodeError as exc:
+        return JsonResponse({"error": str(exc)}, status=415)
+    except ImagePayloadError as exc:
+        return JsonResponse({"error": str(exc)}, status=400)
+    except EmbeddingError:
+        # The embedding hop is down; nothing was written. Mirrors capture_api's
+        # 502 so the app retries instead of showing an HTML error page.
+        return JsonResponse({"error": "embedding service unavailable"}, status=502)
+
+    return JsonResponse(
+        {
+            "experience_id": result["experience_id"],
+            "attachment_id": result["attachment_id"],
+            "object_key": result["object_key"],
+            "byte_len": result["byte_len"],
+        }
+    )

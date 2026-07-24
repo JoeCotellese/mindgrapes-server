@@ -32,11 +32,13 @@ _SELECT_COLS = [
     "owner",
     "account_id",
     "visibility",
+    "lat",
+    "lng",
 ]
 
 
 def _row(owner="alice", visibility="private", metadata='{"k": 1}', content="old"):
-    return (ID, content, metadata, None, "note", None, owner, "acct", visibility)
+    return (ID, content, metadata, None, "note", None, owner, "acct", visibility, None, None)
 
 
 def _patch(monkeypatch, cursor, embedding=None):
@@ -90,6 +92,7 @@ def test_edit_content_supersedes_and_auto_retracts(monkeypatch):
             (["similarity"], [(0.42,)]),  # cosine below threshold
             (["id"], [("22222222-2222-2222-2222-222222222222",)]),  # insert returning
             ([], []),  # set superseded_by
+            ([], []),  # carry attachments forward (#42)
             (
                 ["claim_id", "support_kind"],
                 [("c-verbatim", "verbatim"), ("c-para", "paraphrased")],
