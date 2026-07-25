@@ -39,6 +39,28 @@ _INSERT_CLAIM_SOURCE_SQL = """
 """
 
 
+# First-person surface forms that must never become an entity. A note is written
+# in the owner's voice, so "I"/"me"/"my" resolve to the owner — but there is no
+# owner self-entity yet (that binding is entangled with multi-user tenancy, #48),
+# so the safe stopgap is to DROP the claim rather than mint a junk `person` entity
+# literally named "I". Whole-string match only: "my team" / "my dog Roger" are real
+# things to remember and must not be caught. See #56.
+_OWNER_SELF_FORMS = frozenset(
+    {
+        "i", "me", "my", "mine", "myself", "the user",
+        # Plural: "we decided", "our" — bare pronouns mint the same junk entity.
+        # Multi-word ("our team") survives, since this is a whole-string match.
+        "we", "us", "our", "ours", "ourselves",
+    }
+)
+
+
+def is_owner_self_reference(name: str) -> bool:
+    """True when ``name`` is a bare first-person reference to the capturing owner."""
+    normalized = name.strip().strip(".,!?;:\"'").strip().lower()
+    return normalized in _OWNER_SELF_FORMS
+
+
 def new_accumulator() -> dict:
     """Per-batch write counters, returned to the worker for its log line."""
     return {
@@ -46,6 +68,7 @@ def new_accumulator() -> dict:
         "claim_sources_inserted": 0,
         "entities_created_for_objects": 0,
         "literal_objects_fell_back": 0,
+        "claims_skipped_self": 0,
     }
 
 
@@ -95,7 +118,18 @@ def write_claim_for_experience(
     ``claim`` is the snake_case dict that extraction/claims.py:parse_claims emits.
     ``embedding`` is the experience embedding as a pgvector text literal (used as
     resolver context). The caller owns the surrounding transaction.
+
+    A claim whose subject OR object is a bare first-person reference to the owner
+    ("I met Jim", "Jim knows me") is DROPPED rather than written: there is no owner
+    self-entity to bind it to yet (#48), and the alternative — a `person` entity
+    named "I" — is silent data corruption on the most common capture shape (#56).
     """
+    if is_owner_self_reference(claim["subject"]) or is_owner_self_reference(
+        claim["object"]
+    ):
+        acc["claims_skipped_self"] += 1
+        return
+
     subject_id = _resolve_or_create_entity(
         cursor, claim["subject"], claim["subject_kind"], embedding, acc
     )
