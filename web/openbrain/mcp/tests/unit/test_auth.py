@@ -9,7 +9,7 @@ from joserfc import jwt
 from joserfc.errors import SecurityWarning
 from joserfc.jwk import KeySet, OKPKey
 
-from openbrain.mcp.auth import DjangoJWTVerifier
+from openbrain.mcp.auth import DjangoJWTVerifier, build_auth
 
 ISSUER = "http://localhost:8080"
 AUDIENCE = "brain"
@@ -95,3 +95,14 @@ def test_revocation_skipped_without_client_id(key):
     # No client_id claim -> revocation never consulted (operator-minted tokens).
     token = _mint(key)  # no client_id
     assert _verify(key, token, is_revoked=_always_revoked) is not None
+
+
+def test_protected_resource_metadata_uses_the_shared_base_url_setting(settings):
+    # RFC 9728 metadata and /connect's QR (#66) read one derivation of the
+    # server root, so they cannot drift. RemoteAuthProvider normalizes to a
+    # trailing slash; the setting itself carries none.
+    settings.BRAIN_BASE_URL = "https://brain.example.ts.net"
+
+    provider = build_auth()
+
+    assert str(provider.base_url).rstrip("/") == "https://brain.example.ts.net"
