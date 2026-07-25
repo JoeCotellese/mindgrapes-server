@@ -9,8 +9,8 @@ DEFAULT_MODEL = "anthropic/claude-haiku-4.5"
 DEFAULT_TIMEOUT_SECONDS = 30.0
 DEFAULT_MAX_TOKENS = 2048
 
-# Mirrors brain.entity_kind in init/03-brain.sql.
-ENTITY_KINDS = ("person", "org", "event", "place", "concept")
+# Mirrors brain.entity_kind in init/03-brain.sql (animal added in init/20).
+ENTITY_KINDS = ("person", "org", "event", "place", "concept", "animal")
 # Mirrors brain.support_kind, minus 'imported' which only legacy rows use.
 SUPPORT_KINDS = ("verbatim", "paraphrased", "inferred")
 # Canonical predicates from docs/predicates.md. 'other' is the escape hatch.
@@ -69,6 +69,9 @@ CLAIM_SYSTEM_PROMPT = "\n".join(
         '- "inferred": ANY chained or compound claim. If the source says "she knows C from the accelerator, which accepted Fernworks", the claim "(B, knows, C)" is inferred — the source asserts a chain, not the atomic relation. Compound claims of the form "X from Y, who did Z" must be marked inferred for every derived triple.',
         "- If unsure, prefer inferred + low confidence (<0.6) over verbatim.",
         "- Never invent a fact the source does not support. Empty claims array is a valid output.",
+        "",
+        'Entity-kind rules:',
+        '- "animal": a specific named animal or pet ("Roger the dog", "the cat Mochi"). Use it for the animal itself, not for the species as a concept.',
         "",
         "Atomization rules:",
         '- A single multi-fact sentence ("B works at X and used to work at Y") becomes multiple claims, one per fact.',

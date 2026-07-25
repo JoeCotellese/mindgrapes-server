@@ -27,6 +27,7 @@ SPINE: tuple[tuple[str, str], ...] = (
     ("17", "phon-tiebreak"),
     ("18", "experience-geo"),
     ("19", "attachments"),
+    ("20", "animal-entity-kind"),
 )
 
 MANIFEST_IDS: list[str] = [entry[0] for entry in SPINE]

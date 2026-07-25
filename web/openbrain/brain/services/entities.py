@@ -22,7 +22,7 @@ from openbrain.brain.db import (
 from openbrain.brain.embeddings import embed_query
 from openbrain.brain.services.name_matching import recommend_action
 
-EntityKind = ("person", "org", "event", "place", "concept")
+EntityKind = ("person", "org", "event", "place", "concept", "animal")
 
 
 def normalize_split_into(into: dict, source_kind: str) -> dict:

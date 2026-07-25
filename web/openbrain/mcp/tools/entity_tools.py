@@ -139,7 +139,7 @@ def register_entity_tools(mcp) -> None:
                 "server-side."
             ),
         ] = None,
-        kind: Literal["person", "org", "event", "place", "concept"] = "person",
+        kind: Literal["person", "org", "event", "place", "concept", "animal"] = "person",
         top_k: Annotated[int, Field(ge=1, le=20)] = 5,
     ) -> dict:
         return serialize(

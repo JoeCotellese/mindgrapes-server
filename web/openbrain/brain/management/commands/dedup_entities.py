@@ -30,7 +30,7 @@ from openbrain.brain.services import name_matching, probabilistic
 from openbrain.brain.services.dedup import plan_dedup
 from openbrain.brain.services.entities import merge_entities
 
-_KINDS = ("person", "org", "event", "place", "concept")
+_KINDS = ("person", "org", "event", "place", "concept", "animal")
 
 # Scorer seam (#31): 'default' is the current name_matching decision, 'fs' is the
 # probabilistic Fellegi-Sunter scorer. Blocking is scorer-independent either way.

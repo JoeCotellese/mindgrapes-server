@@ -34,6 +34,22 @@ CLAIMS_A = {
 }
 
 
+CLAIMS_ANIMAL = {
+    "claims": [
+        {
+            "subject": "Jim",
+            "subject_kind": "person",
+            "predicate": "other",
+            "predicate_detail": "owns",
+            "object": "Roger",
+            "object_kind": "animal",
+            "support_kind": "verbatim",
+            "confidence": 0.9,
+        }
+    ]
+}
+
+
 def _seed_inprogress(content="B works at Initech Toronto.", attempts=1):
     """Insert one experience already in_progress with the given attempt count.
 
@@ -97,6 +113,39 @@ class TestHandleNotification:
         assert len(claims) == 1
         assert claims[0][0] == "works_at"
         assert claims[0][1] == CONSOLIDATION_EXTRACTED_BY
+
+    def test_animal_object_creates_animal_entity(self):
+        # #57: an animal-kind object binds to a dedicated 'animal' entity, not a
+        # 'person' (which would make a pet a merge-candidate against a same-named
+        # person) nor a demoted 'concept' literal. Seed a PERSON 'Roger' first and
+        # assert the animal binds to a DISTINCT entity — proving non-collision
+        # directly, not just via the kind-scoped SQL.
+        person_roger = str(uuid.uuid4())
+        with connection.cursor() as cur:
+            cur.execute(
+                "insert into brain.entities (id, kind, canonical_name) "
+                "values (%s::uuid, 'person'::brain.entity_kind, 'Roger')",
+                [person_roger],
+            )
+        eid = _seed_inprogress(content="Jim's dog Roger.")
+
+        outcome = handle_notification(eid, extract=lambda **_k: CLAIMS_ANIMAL)
+
+        assert outcome["status"] == "complete"
+        with connection.cursor() as cur:
+            cur.execute(
+                "select e.id::text, e.kind::text, e.canonical_name "
+                "from brain.claims c "
+                "join brain.entities e on e.id = c.object_entity_id "
+                "join brain.claim_sources cs on cs.claim_id = c.id "
+                "where cs.experience_id = %s::uuid",
+                [eid],
+            )
+            rows = cur.fetchall()
+        assert len(rows) == 1
+        object_id, kind, name = rows[0]
+        assert (kind, name) == ("animal", "Roger")
+        assert object_id != person_roger  # the pet did NOT bind to the person
 
     def test_skips_when_not_in_progress(self):
         # A bare 'pending' row was never claimed by the cron proc.
