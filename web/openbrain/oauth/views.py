@@ -14,11 +14,13 @@ import secrets
 import time
 from urllib.parse import urlsplit
 
+import segno
 from authlib.oauth2 import OAuth2Error
 from django.conf import settings
 from django.contrib.auth.decorators import login_required
 from django.http import Http404, JsonResponse
 from django.shortcuts import redirect, render
+from django.utils.safestring import mark_safe
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_POST
 
@@ -174,6 +176,9 @@ def register(request):
 def connect(request):
     """The human on-ramp: the brain's address + per-app setup steps (#76).
 
+    Also the phone's on-ramp (#66): a QR of the server root the iPhone app
+    scans instead of making someone type a Tailscale hostname on a keyboard.
+
     Server-rendered and fully usable without JS — copy buttons are progressive
     enhancement. It closes with a link to the connected-clients screen (the
     honest post-authorization destination) rather than a server-built
@@ -182,6 +187,19 @@ def connect(request):
     registers itself via DCR.
     """
     mcp_url = settings.BRAIN_MCP_URL
+    base_url = settings.BRAIN_BASE_URL
+    # The QR carries the hostname and nothing else — no token, no pairing code,
+    # no short-lived secret. Scanning it grants nothing; the passkey ceremony
+    # still runs. That is what makes it safe to render on a page someone may
+    # have open on a shared screen. Do not "improve" it into a pairing token.
+    # Explicit light background: the page follows prefers-color-scheme, and a
+    # transparent QR is unscannable against the dark theme.
+    # mark_safe is sound here: the SVG is ours, built from a settings value.
+    qr_svg = mark_safe(
+        segno.make(base_url, error="m").svg_inline(
+            scale=6, border=2, dark="#000", light="#fff", title=base_url
+        )
+    )
     connector_steps = [
         "Open Settings, then Connectors.",
         "Choose Add custom connector.",
@@ -246,7 +264,12 @@ def connect(request):
     return render(
         request,
         "oauth/connect.html",
-        {"mcp_url": mcp_url, "connection_steps": connection_steps},
+        {
+            "mcp_url": mcp_url,
+            "base_url": base_url,
+            "qr_svg": qr_svg,
+            "connection_steps": connection_steps,
+        },
     )
 
 

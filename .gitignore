@@ -13,3 +13,6 @@ web/staticfiles/
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# Playwright MCP scratch output (browser snapshots, console logs)
+.playwright-mcp/

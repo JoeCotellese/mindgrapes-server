@@ -154,14 +154,6 @@ class DjangoJWTVerifier(TokenVerifier):
         )
 
 
-def _base_url() -> str:
-    """The MCP server's public base URL (BRAIN_MCP_URL minus the /mcp path)."""
-    mcp_url = settings.BRAIN_MCP_URL.rstrip("/")
-    if mcp_url.endswith("/mcp"):
-        return mcp_url[: -len("/mcp")]
-    return mcp_url
-
-
 def build_auth() -> RemoteAuthProvider:
     """Wire the verifier into a RemoteAuthProvider (RFC 9728 metadata)."""
     from openbrain.oauth.scopes import SCOPES
@@ -174,6 +166,8 @@ def build_auth() -> RemoteAuthProvider:
     return RemoteAuthProvider(
         token_verifier=verifier,
         authorization_servers=[AnyHttpUrl(settings.OAUTH_ISSUER)],
-        base_url=_base_url(),
+        # One derivation of the server root, in settings, shared with /connect's
+        # QR (#66) — so the two cannot drift.
+        base_url=settings.BRAIN_BASE_URL,
         scopes_supported=list(SCOPES),
     )

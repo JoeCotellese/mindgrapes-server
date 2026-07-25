@@ -9,9 +9,10 @@ and the honest closing link.
 """
 
 import pytest
+import segno
 from django.conf import settings
 from django.contrib.auth import get_user_model
-from django.test import Client
+from django.test import Client, override_settings
 
 pytestmark = pytest.mark.django_db
 
@@ -25,6 +26,21 @@ def _logged_in(email="member@example.net"):
     http = Client()
     http.force_login(user)
     return http, user
+
+
+def _qr_for(url):
+    """The exact inline SVG a QR of `url` produces, encoded independently here.
+
+    ponytail: re-encoding stands in for decoding the rendered QR. segno is
+    deterministic for the same payload and options, so a byte-identical SVG
+    means the page encoded this payload and no other — without dragging a QR
+    *decoder* (pyzbar/opencv, native deps) into the unit suite. The ceiling is
+    that the options below have to stay in step with the view; swap in a real
+    decode if that ever gets tedious.
+    """
+    return segno.make(url, error="m").svg_inline(
+        scale=6, border=2, dark="#000", light="#fff", title=url
+    )
 
 
 def test_connect_requires_login():
@@ -80,6 +96,29 @@ def test_connect_is_reachable_from_the_nav_and_active_when_on_it():
     # On /connect, no other nav item matches request.path, so the active-state
     # markup can only belong to the Connect link.
     assert b'aria-current="page"' in res.content
+
+
+def test_connect_renders_a_scannable_qr_of_the_base_url():
+    http, _ = _logged_in()
+
+    res = http.get(CONNECT_URL)
+
+    # Server-rendered inline SVG: it is in the HTML the test client got back,
+    # so the page needs no JS to show it (#66).
+    assert b"<svg" in res.content
+    assert b"Scan this" in res.content
+    # The payload is the base URL — scheme + host, no /mcp suffix.
+    assert _qr_for("http://localhost:8080").encode() in res.content
+    assert _qr_for(settings.BRAIN_MCP_URL).encode() not in res.content
+
+
+@override_settings(BRAIN_BASE_URL="https://brain.example.ts.net")
+def test_connect_qr_follows_the_configured_base_url():
+    http, _ = _logged_in()
+
+    res = http.get(CONNECT_URL)
+
+    assert _qr_for("https://brain.example.ts.net").encode() in res.content
 
 
 def test_connect_covers_non_claude_clients_and_a_generic_bridge():

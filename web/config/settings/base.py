@@ -7,6 +7,7 @@ writes the brain.* schema directly (re-embedding edited content via OpenRouter).
 """
 
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 import environ
 
@@ -188,6 +189,16 @@ AUTHLIB_OAUTH2_PROVIDER = {
 # public https URL (https://brain.example.net/mcp) via the BRAIN_MCP_URL env
 # var. The public value depends on #58 (TLS).
 BRAIN_MCP_URL = env("BRAIN_MCP_URL", default="http://localhost:8080/mcp")
+
+# The server root, scheme + host and nothing else — what the /connect QR encodes
+# for iOS onboarding (#66) and what the MCP protected-resource metadata is keyed
+# on. Derived from BRAIN_MCP_URL so no deploy has to set it; BRAIN_BASE_URL wins
+# when the MCP endpoint ever moves off this host.
+_mcp_url = urlsplit(BRAIN_MCP_URL)
+BRAIN_BASE_URL = env(
+    "BRAIN_BASE_URL",
+    default=urlunsplit((_mcp_url.scheme, _mcp_url.netloc, "", "", "")),
+)
 
 # Python MCP server (epic #117). run_mcp validates Django's EdDSA tokens offline
 # against this JWKS (the in-cluster web URL, distinct from the public issuer) and
