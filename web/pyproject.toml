@@ -26,6 +26,7 @@ dependencies = [
     "boto3>=1.35",
     "pillow>=11.0",
     "pillow-heif>=0.18",
+    "segno>=1.6",
 ]
 
 [project.optional-dependencies]

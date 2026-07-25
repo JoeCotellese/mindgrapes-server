@@ -23,6 +23,17 @@
                 hidden>Copy</button>
       </div>
     </div>
+
+    {% comment %}The QR (#66) encodes the server root — no /mcp path — because
+    that is what the iPhone app's onboarding expects. It is rendered server-side
+    so the page keeps working with JS off. Captioned, because a bare QR on a
+    page about MCP connectors reads as noise to anyone not holding a phone.
+    {% endcomment %}
+    <div class="mt-4">
+      <p class="mb-2">Setting up the iPhone app? Scan this.</p>
+      {{ qr_svg }}
+      <p class="help">{{ base_url }}</p>
+    </div>
   </section>
 
   <section aria-labelledby="how-heading">
