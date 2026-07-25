@@ -3,6 +3,8 @@
 These lock the auth scaffolding so later slices build on a known baseline.
 """
 
+import importlib
+
 from django.conf import settings
 from django.urls import reverse
 
@@ -44,3 +46,23 @@ def test_brain_mcp_url_has_dev_default():
     # The /connect page shows this as the brain's address; prod overrides it via
     # the BRAIN_MCP_URL env var (the public https /mcp endpoint).
     assert settings.BRAIN_MCP_URL == "http://localhost:8080/mcp"
+
+
+def test_brain_base_url_derives_from_the_mcp_url():
+    # The /connect QR (#66) and the iOS onboarding it feeds want scheme + host
+    # only: the /mcp suffix is stripped and no trailing slash survives.
+    assert settings.BRAIN_BASE_URL == "http://localhost:8080"
+
+
+def test_brain_base_url_env_overrides_the_derived_value(monkeypatch):
+    monkeypatch.setenv("BRAIN_BASE_URL", "https://brain.example.ts.net")
+    base = importlib.import_module("config.settings.base")
+    try:
+        importlib.reload(base)
+        assert base.BRAIN_BASE_URL == "https://brain.example.ts.net"
+    finally:
+        # Reload once more with the env var gone so the module object matches
+        # the process env again; django.conf.settings holds copied attributes,
+        # so neither reload touches the live settings.
+        monkeypatch.delenv("BRAIN_BASE_URL")
+        importlib.reload(base)
