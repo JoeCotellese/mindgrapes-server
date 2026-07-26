@@ -20,6 +20,7 @@ CANONICAL_PREDICATES = (
     "mentored_by",
     "reports_to",
     "introduced_by",
+    "owns",
     "works_at",
     "used_to_work_at",
     "founded",

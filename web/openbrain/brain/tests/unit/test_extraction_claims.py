@@ -64,6 +64,24 @@ def test_parse_claims_accepts_animal_kind():
     assert claims[0]["subject_kind"] == "animal"
 
 
+def test_parse_claims_accepts_owns_predicate():
+    # #58: ownership/pet relations get a canonical predicate instead of 'other'.
+    claims = parse_claims(
+        {
+            "claims": [
+                _claim(
+                    subject="Joe",
+                    predicate="owns",
+                    object="Roger",
+                    object_kind="animal",
+                )
+            ]
+        }
+    )
+    assert claims[0]["predicate"] == "owns"
+    assert claims[0]["predicate_detail"] is None
+
+
 def test_parse_claims_rejects_out_of_range_confidence():
     with pytest.raises(ClaimValidationError):
         parse_claims({"claims": [_claim(confidence=1.5)]})
