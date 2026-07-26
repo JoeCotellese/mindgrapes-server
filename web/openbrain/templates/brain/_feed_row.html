@@ -1,6 +1,6 @@
 {% comment %}One feed row: an experience as a Bulma media list item. Shared by
   /recent (List) and the Timeline. Expects `exp` with: id, snippet, captured_at,
-  source, visibility, entities. Optional `oob_target` (a bucket slug) makes the
+  source, visibility, lat, lng, entities. Optional `oob_target` (a bucket slug) makes the
   row an htmx out-of-band append into #rows-<slug> — used when a Load-more page
   continues the previous page's day bucket (#135). The snippet link is the row's
   accessible name; badges carry the word + a redundant icon, never color
@@ -30,6 +30,19 @@
         </p>
       {% endif %}
       <div class="tags is-justify-content-flex-end">
+        {% comment %}`is not None`, never truthiness: lat 0.0 (the equator) is a
+          real coordinate. Coordinates are stringformat'ed rather than
+          floatformat'ed so a thousands-separator locale can never put a comma
+          inside the map URL. rel=noreferrer keeps the coordinates out of the
+          Referer header when the link is followed.{% endcomment %}
+        {% if exp.lat is not None and exp.lng is not None %}
+          <a class="tag is-light"
+             href="https://maps.apple.com/?ll={{ exp.lat|stringformat:'f' }},{{ exp.lng|stringformat:'f' }}"
+             target="_blank" rel="noopener noreferrer"
+             aria-label="Location {{ exp.lat|stringformat:'.4f' }}, {{ exp.lng|stringformat:'.4f' }}, opens in Maps">
+            <span aria-hidden="true">📍</span>&nbsp;{{ exp.lat|stringformat:'.4f' }}, {{ exp.lng|stringformat:'.4f' }}
+          </a>
+        {% endif %}
         {% if exp.source %}
           <span class="tag is-light" aria-label="Captured via {{ exp.source }}">{{ exp.source }}</span>
         {% endif %}

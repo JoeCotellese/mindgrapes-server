@@ -22,12 +22,17 @@ SNIPPET_CHARS = 280
 # _SEARCH_SQL — `json` type, so psycopg parses it; no parse_json needed.
 # source: metadata->>'source' is the capturing tool (e.g. 'mcp'); source_kind is
 # the processing role, not the tool, so it is deliberately not used here.
+# lat/lng (#43) are the geolocation columns, null on most rows; the row template
+# shows a chip only when both are present. Selected raw — no rounding here, so
+# the view-model stays the stored value and presentation owns the formatting.
 _RECENT_FEED_SQL = """
     select ex.id::text            as id,
            ex.content             as content,
            ex.captured_at         as captured_at,
            ex.metadata->>'source' as source,
            ex.visibility::text    as visibility,
+           ex.lat                 as lat,
+           ex.lng                 as lng,
            coalesce((
              select json_agg(json_build_object(
                       'id', e.id::text,
@@ -65,6 +70,8 @@ def _format_feed_row(row: dict) -> dict:
         "captured_at": row["captured_at"],
         "source": row["source"],
         "visibility": row["visibility"],
+        "lat": row["lat"],
+        "lng": row["lng"],
         "entities": row["entities"],
     }
 

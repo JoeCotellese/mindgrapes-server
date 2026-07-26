@@ -402,13 +402,15 @@ def test_search_embedding_failure_degrades_gracefully(client, member, monkeypatc
 RECENT_URL = "/recent"
 
 
-def _feed_row(visibility="private", source="mcp"):
+def _feed_row(visibility="private", source="mcp", lat=None, lng=None):
     return {
         "id": "11111111-1111-1111-1111-111111111111",
         "snippet": "Met with Acme about the deal",
         "captured_at": None,
         "source": source,
         "visibility": visibility,
+        "lat": lat,
+        "lng": lng,
         "entities": [
             {
                 "id": "33333333-3333-3333-3333-333333333333",
@@ -464,6 +466,35 @@ def test_recent_private_badge_shows_word(client, member, monkeypatch):
     )
     body = client.get(RECENT_URL).content.decode()
     assert "Private" in body
+
+
+def _recent_body(client, monkeypatch, row):
+    monkeypatch.setattr("openbrain.brain.views.brain_schema_present", lambda: True)
+    monkeypatch.setattr(
+        "openbrain.brain.views.get_recent_feed", lambda *a, **k: _feed_page(rows=[row])
+    )
+    return client.get(RECENT_URL).content.decode()
+
+
+def test_recent_shows_location_chip_when_geotagged(client, member, monkeypatch):
+    client.force_login(member)
+    body = _recent_body(client, monkeypatch, _feed_row(lat=39.9526, lng=-75.1652))
+    assert "39.9526, -75.1652" in body
+    assert "https://maps.apple.com/?ll=39.952600,-75.165200" in body
+
+
+def test_recent_omits_location_chip_without_coordinates(client, member, monkeypatch):
+    client.force_login(member)
+    body = _recent_body(client, monkeypatch, _feed_row())
+    assert "maps.apple.com" not in body
+
+
+def test_recent_shows_location_chip_at_zero_coordinates(client, member, monkeypatch):
+    # 0.0 is the equator / prime meridian, not "no location" — a truthiness test
+    # in the template would silently drop this row's chip.
+    client.force_login(member)
+    body = _recent_body(client, monkeypatch, _feed_row(lat=0.0, lng=0.0))
+    assert "0.0000, 0.0000" in body
 
 
 def test_recent_empty_state(client, member, monkeypatch):
