@@ -34,7 +34,7 @@ def test_cap_matches_sql_proc():
 def test_extracted_by_is_versioned_past_v1():
     # #11: claim_sources.extracted_by is the only handle on which prompt wrote a
     # claim. The v1 prompt was missing the excluded-predicate families, so the
-    # deferred backfill of the 4,528 'other' claims needs v1 rows to stay
-    # distinguishable from v2 ones. Bump this whenever the prompt changes
-    # behavior.
-    assert CONSOLIDATION_EXTRACTED_BY.endswith("-v2")
+    # deferred backfill of those claims selects on v1 — rows written by the
+    # fixed prompt must not answer to that name. Asserts "not v1" rather than
+    # "is v2" so a later behavior-changing bump doesn't have to fight this test.
+    assert not CONSOLIDATION_EXTRACTED_BY.endswith("-v1")

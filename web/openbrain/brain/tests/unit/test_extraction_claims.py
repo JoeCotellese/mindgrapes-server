@@ -118,8 +118,9 @@ def test_prompt_names_every_excluded_predicate_family(banned):
 
 
 def test_prompt_tells_the_model_to_drop_excluded_claims():
-    # The escape hatch is unconditional ("if no canonical predicate fits, use
-    # 'other'"), so the exclusions are only load-bearing if they say "drop".
+    # Naming the families is not enough: "not a canonical predicate" reads as
+    # "use 'other'", which is the behavior being fixed. The exclusions are only
+    # load-bearing if they say to drop the claim.
     assert "Drop the claim" in CLAIM_SYSTEM_PROMPT
 
 

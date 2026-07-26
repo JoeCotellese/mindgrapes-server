@@ -92,10 +92,10 @@ The migration writes `predicate='other'` and `predicate_detail='is_godparent_to'
 
 These are **not** candidates for the `other` escape hatch. The extractor is instructed to drop the claim entirely; routing an excluded relation through `predicate='other'` is the failure mode this list exists to prevent.
 
-- **`is_a` / `instance_of` / type predicates.** Entity kind already lives on `brain.entities.kind`. A claim "(B, is_a, person)" duplicates schema-level information.
-- **`mentioned_in` / `references`.** These are provenance, not facts. Provenance is captured in `claim_sources` and `brain.mentions`.
-- **`*_count` aggregates.** Aggregations are queries over the graph, not claims.
-- **`will_*` predictive predicates.** The brain stores what the user knows or has experienced, not predictions. If a captured thought predicts something, the predicate is `believes` or `decided_to` with the prediction as a literal object.
+- **`is_a` / `is` / `instance_of` / `is_classified_as` / `is_at_version` / type predicates.** Entity kind already lives on `brain.entities.kind`. A claim "(B, is_a, person)" duplicates schema-level information.
+- **`mentioned_in` / `references` / `mentions`.** These are provenance, not facts. Provenance is captured in `claim_sources` and `brain.mentions`.
+- **`*_count` / `has_N_of` aggregates.** Aggregations are queries over the graph, not claims.
+- **`will_*` / `going_to_*` predictive predicates.** The brain stores what the user knows or has experienced, not predictions. If a captured thought predicts something, the predicate is `believes` or `decided_to` with the prediction as a literal object.
 
 ## Prompt integration
 
