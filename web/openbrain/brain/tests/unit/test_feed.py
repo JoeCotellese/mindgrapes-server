@@ -16,7 +16,16 @@ from openbrain.brain.services.feed import (
 
 from ._support import StubCursor, patch_brain_cursor
 
-FEED_COLUMNS = ["id", "content", "captured_at", "source", "visibility", "entities"]
+FEED_COLUMNS = [
+    "id",
+    "content",
+    "captured_at",
+    "source",
+    "visibility",
+    "lat",
+    "lng",
+    "entities",
+]
 
 
 def _row(
@@ -25,10 +34,12 @@ def _row(
     captured_at=None,
     source="mcp",
     visibility="private",
+    lat=None,
+    lng=None,
     entities=None,
 ):
     # entities is json (json_agg) → psycopg returns it already parsed as a list.
-    return (id, content, captured_at, source, visibility, entities or [])
+    return (id, content, captured_at, source, visibility, lat, lng, entities or [])
 
 
 def _patch(monkeypatch, cursor):
@@ -55,6 +66,28 @@ def test_get_recent_feed_projects_row_fields(monkeypatch):
     assert row["source"] == "claude"
     assert row["visibility"] == "shared"
     assert row["entities"][0]["canonical_name"] == "Acme"
+
+
+def test_get_recent_feed_projects_location(monkeypatch):
+    # 0.0 is a real coordinate (equator / prime meridian), so the projection must
+    # pass it through rather than fold it into "no location" (#43, #70).
+    cursor = StubCursor([(FEED_COLUMNS, [_row(lat=0.0, lng=-75.3402)])])
+    _patch(monkeypatch, cursor)
+
+    row = get_recent_feed("7", 20, 0)["experiences"][0]
+
+    assert row["lat"] == 0.0
+    assert row["lng"] == -75.3402
+
+
+def test_get_recent_feed_row_without_location_is_null(monkeypatch):
+    cursor = StubCursor([(FEED_COLUMNS, [_row()])])
+    _patch(monkeypatch, cursor)
+
+    row = get_recent_feed("7", 20, 0)["experiences"][0]
+
+    assert row["lat"] is None
+    assert row["lng"] is None
 
 
 def test_get_recent_feed_truncates_long_content_to_snippet(monkeypatch):

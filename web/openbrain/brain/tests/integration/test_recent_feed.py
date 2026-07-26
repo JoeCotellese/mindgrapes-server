@@ -38,6 +38,8 @@ def _seed(
     source="mcp",
     superseded_by=None,
     deleted_at=None,
+    lat=None,
+    lng=None,
 ):
     eid = str(uuid.uuid4())
     with connection.cursor() as cur:
@@ -45,9 +47,9 @@ def _seed(
             """
             insert into brain.experiences
               (id, content, owner, visibility, metadata, captured_at,
-               superseded_by, deleted_at)
+               superseded_by, deleted_at, lat, lng)
             values (%s::uuid, %s, %s, %s::brain.visibility, %s::jsonb,
-                    %s::timestamptz, %s::uuid, %s::timestamptz)
+                    %s::timestamptz, %s::uuid, %s::timestamptz, %s, %s)
             """,
             [
                 eid,
@@ -58,6 +60,8 @@ def _seed(
                 captured_at,
                 superseded_by,
                 deleted_at,
+                lat,
+                lng,
             ],
         )
     return eid
@@ -159,6 +163,20 @@ def test_projects_source_and_visibility():
 
     assert row["source"] == "claude"
     assert row["visibility"] == "shared"
+
+
+def test_projects_lat_lng():
+    # The drift contract for the geolocation columns (#43) reaching the feed
+    # (#70): a geotagged row carries its coordinates, an untagged one stays null.
+    geo_id = _seed(VIEWER, content="itest geotagged", lat=39.9526, lng=-75.1652)
+    plain_id = _seed(VIEWER, content="itest no location")
+
+    feed = get_recent_feed(VIEWER, 100, 0)
+    geo_row = next(r for r in feed["experiences"] if r["id"] == geo_id)
+    plain_row = next(r for r in feed["experiences"] if r["id"] == plain_id)
+
+    assert (geo_row["lat"], geo_row["lng"]) == (39.9526, -75.1652)
+    assert (plain_row["lat"], plain_row["lng"]) == (None, None)
 
 
 def _bucket_of(groups, exp_id):
