@@ -2,6 +2,7 @@
 # ABOUTME: decide_after_failure is a pure function, tested exhaustively here.
 
 from openbrain.brain.consolidation import (
+    CONSOLIDATION_EXTRACTED_BY,
     MAX_CONSOLIDATION_ATTEMPTS,
     decide_after_failure,
 )
@@ -28,3 +29,12 @@ def test_cap_matches_sql_proc():
     # eligibility check and the Python terminal decision disagree, and rows end
     # up either over-retried or prematurely failed.
     assert MAX_CONSOLIDATION_ATTEMPTS == 3
+
+
+def test_extracted_by_is_versioned_past_v1():
+    # #11: claim_sources.extracted_by is the only handle on which prompt wrote a
+    # claim. The v1 prompt was missing the excluded-predicate families, so the
+    # deferred backfill of those claims selects on v1 — rows written by the
+    # fixed prompt must not answer to that name. Asserts "not v1" rather than
+    # "is v2" so a later behavior-changing bump doesn't have to fight this test.
+    assert not CONSOLIDATION_EXTRACTED_BY.endswith("-v1")

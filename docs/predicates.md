@@ -22,6 +22,7 @@ The list aims for ~20 predicates that cover the dominant relations in a personal
 | `mentored_by` | Object mentors / has mentored the subject. | `(Ada, mentored_by, Grace)` |
 | `reports_to` | Org-chart relationship. Subject reports to object. | `(Ada, reports_to, Acme-CEO)` |
 | `introduced_by` | Object introduced the subject to a third party (third party expressed in `predicate_detail` if not the immediate object). | `(B, introduced_by, Ada)` |
+| `owns` | Subject owns or has custody of the object. Covers pets and possessions alike — `object_kind` (`animal` vs `concept`) carries the distinction, so there is no separate `has_pet`. | `(Joe, owns, Roger)` |
 
 ## Employment & affiliation
 
@@ -89,11 +90,17 @@ The migration writes `predicate='other'` and `predicate_detail='is_godparent_to'
 
 ## Predicates explicitly excluded (rationale)
 
-- **`is_a` / `instance_of` / type predicates.** Entity kind already lives on `brain.entities.kind`. A claim "(B, is_a, person)" duplicates schema-level information.
-- **`mentioned_in` / `references`.** These are provenance, not facts. Provenance is captured in `claim_sources` and `brain.mentions`.
-- **`*_count` aggregates.** Aggregations are queries over the graph, not claims.
-- **`will_*` predictive predicates.** The brain stores what the user knows or has experienced, not predictions. If a captured thought predicts something, the predicate is `believes` or `decided_to` with the prediction as a literal object.
+These are **not** candidates for the `other` escape hatch. The extractor is instructed to drop the claim entirely; routing an excluded relation through `predicate='other'` is the failure mode this list exists to prevent.
+
+- **`is_a` / `is` / `instance_of` / `is_classified_as` / `is_at_version` / type predicates.** Entity kind already lives on `brain.entities.kind`. A claim "(B, is_a, person)" duplicates schema-level information.
+- **`mentioned_in` / `references` / `mentions`.** These are provenance, not facts. Provenance is captured in `claim_sources` and `brain.mentions`.
+- **`*_count` / `has_N_of` aggregates.** Aggregations are queries over the graph, not claims.
+- **`will_*` / `going_to_*` predictive predicates.** The brain stores what the user knows or has experienced, not predictions. If a captured thought predicts something, the predicate is `believes` or `decided_to` with the prediction as a literal object.
 
 ## Prompt integration
 
-The migration's system prompt enumerates this list with one-line definitions and the `other`+`predicate_detail` escape hatch. It instructs the model that `support_kind='verbatim'` requires the relation to be directly stated in the source text — compound or chained inferences ("she knows C from the accelerator, which accepted Fernworks" → "C is at the accelerator") must always be marked `inferred`. This is the calibration the spec §6 chained-inference example targets.
+`CLAIM_SYSTEM_PROMPT` (`web/openbrain/brain/extraction/claims.py`) is the shipped form of this document; `CANONICAL_PREDICATES` in the same file is the list above. The prompt enumerates the vocabulary, the `other`+`predicate_detail` escape hatch, and — since #11 — the excluded families above, each with an explicit instruction to drop rather than fall back to `other`. Those exclusions sit *after* the escape-hatch line so they qualify it; ordering matters, because an unconditional "if nothing fits, use `other`" is what put 53% of the graph in `other` in the first place.
+
+It also instructs the model that `support_kind='verbatim'` requires the relation to be directly stated in the source text — compound or chained inferences ("she knows C from the accelerator, which accepted Fernworks" → "C is at the accelerator") must always be marked `inferred`. This is the calibration the spec §6 chained-inference example targets.
+
+Changing this document and not changing that prompt is a no-op: the doc is not read at runtime. A behavior-changing prompt edit also bumps `CONSOLIDATION_EXTRACTED_BY` (`consolidation.py`), which is the only per-claim record of which prompt version wrote it.

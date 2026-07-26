@@ -20,6 +20,7 @@ CANONICAL_PREDICATES = (
     "mentored_by",
     "reports_to",
     "introduced_by",
+    "owns",
     "works_at",
     "used_to_work_at",
     "founded",
@@ -78,7 +79,15 @@ CLAIM_SYSTEM_PROMPT = "\n".join(
         '- A single multi-fact sentence ("B works at X and used to work at Y") becomes multiple claims, one per fact.',
         '- Do NOT collapse compound chains into a single claim. "A knows B from C" is two claims at most: (A, knows, B) and possibly (B, met_at, C) — and the second is inferred.',
         "",
-        'Predicate vocabulary is soft. If no canonical predicate fits, use predicate="other" and put the original relation phrasing in predicate_detail (e.g. predicate_detail="is_godparent_to").',
+        "Predicate rules:",
+        '- "owns": ownership or custody, covering both pets ("his dog Roger" is (Joe, owns, Roger) with object_kind="animal") and possessions ("Ada drives a Tesla Model 3" is (Ada, owns, "Tesla Model 3")). Use it instead of predicate="other" with phrasings like has_dog, belongs_to, or drives.',
+        '- These relation families are NEVER claims. Drop the claim entirely — do NOT route it through predicate="other":',
+        '  - Type or classification ("is_a", "is", "instance_of", "is_classified_as", "is_at_version"). Entity kind is already carried by subject_kind / object_kind — a claim restating it is duplicate schema-level information.',
+        '  - Provenance ("mentioned_in", "references", "mentions"). Which note a thing appeared in is already recorded separately; it is not a fact about the entity.',
+        '  - Counts and aggregates ("*_count", "has_N_of"). Aggregations are queries over the graph, not claims.',
+        '  - Predictions ("will_*", "going_to_*"). The brain stores what the user knows or has experienced. Record a prediction as (subject, believes, "<the prediction>") or (subject, decided_to, "<the plan>") instead — and never as a completed or past-tense relation.',
+        "",
+        'Predicate vocabulary is soft. If no canonical predicate fits AND the relation is not in the excluded families above, use predicate="other" and put the original relation phrasing in predicate_detail (e.g. predicate_detail="is_godparent_to").',
     ]
 )
 
