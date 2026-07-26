@@ -3,7 +3,11 @@
 
 import pytest
 
-from openbrain.brain.extraction.claims import ClaimValidationError, parse_claims
+from openbrain.brain.extraction.claims import (
+    CLAIM_SYSTEM_PROMPT,
+    ClaimValidationError,
+    parse_claims,
+)
 
 
 def _claim(**overrides):
@@ -99,3 +103,25 @@ def test_parse_claims_empty_array_is_valid():
 def test_parse_claims_requires_claims_array():
     with pytest.raises(ClaimValidationError):
         parse_claims({"not_claims": []})
+
+
+# #11: the "Predicates explicitly excluded" section of docs/predicates.md never
+# reached the prompt, so banned relations routed through 'other' instead of
+# being dropped. These pin each family into the shipped prompt text. They cannot
+# prove the model obeys — that needs the live eval reported on the PR.
+@pytest.mark.parametrize(
+    "banned",
+    ["is_a", "instance_of", "mentioned_in", "references", "_count", "will_"],
+)
+def test_prompt_names_every_excluded_predicate_family(banned):
+    assert banned in CLAIM_SYSTEM_PROMPT
+
+
+def test_prompt_tells_the_model_to_drop_excluded_claims():
+    # The escape hatch is unconditional ("if no canonical predicate fits, use
+    # 'other'"), so the exclusions are only load-bearing if they say "drop".
+    assert "Drop the claim" in CLAIM_SYSTEM_PROMPT
+
+
+def test_prompt_steers_ownership_onto_owns():
+    assert '"owns"' in CLAIM_SYSTEM_PROMPT
