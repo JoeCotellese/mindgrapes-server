@@ -621,6 +621,80 @@ def test_claim_writer_still_creates_entity_for_a_genuinely_new_name():
     assert acc["entities_created_for_objects"] == 1
 
 
+# --- #73: a dual-channel competitor must not displace an exact name match ------
+#
+# The #17 fix stopped a phon-only competitor from outranking a perfect trgm match,
+# but a competitor that scores on BOTH trgm and vec carries two full RRF terms:
+# trgm rank 2 + vec rank 1 = 1/62 + 1/61 ≈ 0.0325, above an exact match that holds
+# only trgm rank 1 (1/61 ≈ 0.0164). It then heads the fused list, so top_k=1 callers
+# bind to it and resolve_entity bands its recommendation off the wrong candidate —
+# which is how a trgm 1.0 row came back recommending 'create' in production.
+
+
+def _seed_entity_with_embedding(canonical_name, embedding, kind="person"):
+    eid = _new_id()
+    with connection.cursor() as cur:
+        cur.execute(
+            "insert into brain.entities (id, kind, canonical_name, aliases, embedding) "
+            "values (%s::uuid, %s::brain.entity_kind, %s, '{}'::text[], %s::vector)",
+            [eid, kind, canonical_name, embedding],
+        )
+    return eid
+
+
+_QUERY_VEC = [0.02] * 1536
+_QUERY_VEC_LIT = "[" + ",".join(["0.02"] * 1536) + "]"
+
+
+def _query_embed(_text):
+    return _QUERY_VEC
+
+
+def _seed_exact_and_dual_channel_decoy():
+    """Exact name with NO embedding (trgm rank 1 only) vs a near name whose embedding
+    IS the query vector (trgm rank 2 + vec rank 1). Verified against the dev brain:
+    no live person entity trgm-matches 'Zoltan Kovacs'."""
+    exact = _seed_entity(kind="person", canonical_name="Zoltan Kovacs")
+    decoy = _seed_entity_with_embedding("Zoltan Kov", _QUERY_VEC_LIT)
+    return exact, decoy
+
+
+@override_settings(
+    BRAIN_EMBED_FN="openbrain.brain.tests.integration.test_entities._query_embed"
+)
+def test_recommendation_survives_a_dual_channel_competitor():
+    exact, decoy = _seed_exact_and_dual_channel_decoy()
+
+    result = resolve_entity(name="Zoltan Kovacs", kind="person", top_k=5)
+
+    ids = [c["entity_id"] for c in result["candidates"]]
+    assert exact in ids and decoy in ids
+    # The exact match is in the list either way; the bug was banding the
+    # recommendation off whatever fusion put first.
+    assert result["recommendation"] == "reuse"
+
+
+@override_settings(
+    BRAIN_EMBED_FN="openbrain.brain.tests.integration.test_entities._query_embed"
+)
+def test_top_k_1_caller_binds_the_exact_match_not_the_competitor():
+    exact, decoy = _seed_exact_and_dual_channel_decoy()
+    exp = _seed_experience()
+
+    with connection.cursor() as cur:
+        outcome = resolve_or_create_entity(
+            cur,
+            exp,
+            _QUERY_VEC_LIT,
+            surface="Zoltan Kovacs",
+            field="people",
+            kind="person",
+        )
+
+    assert outcome["entity_id"] == exact
+    assert outcome["action"] == "matched"
+
+
 # --- #17: phon is a tiebreak, not a channel that can outrank a trgm match ------
 #
 # brain.resolve_entity fuses trgm + phon + vec via RRF. A trgm rank-1 hit is worth

@@ -28,7 +28,7 @@ MAX_CONSOLIDATION_ATTEMPTS = 3
 # v2 (#11) is the first prompt that carries the excluded-predicate families.
 # Bump this with every behavior-changing prompt edit — it is what lets a backfill
 # tell v1 claims apart from v2 ones.
-CONSOLIDATION_EXTRACTED_BY = "anthropic/claude-haiku-4.5-consolidation-v2"
+CONSOLIDATION_EXTRACTED_BY = "anthropic/claude-haiku-4.5-consolidation-v3"
 
 
 def decide_after_failure(

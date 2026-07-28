@@ -939,9 +939,12 @@ def resolve_entity(
         row["vec_score"] = float(row["vec_score"])
         row["fused_score"] = float(row["fused_score"])
 
-    # Band the top candidate's name-similarity server-side so the 0.85/0.55
+    # Band the best name-similarity in the result server-side so the 0.85/0.55
     # cut-points live in one place (#8), not replicated across client prompts.
-    top_trgm = candidates[0]["trgm_score"] if candidates else 0.0
+    # Best-of, not candidates[0]: fusion can seat a dual-channel competitor above
+    # an exact match (#73), and banding off the head then recommends 'create'
+    # while a trgm 1.0 row sits further down the same response.
+    top_trgm = max((c["trgm_score"] for c in candidates), default=0.0)
     return {
         "query_name": name,
         "query_kind": kind,
