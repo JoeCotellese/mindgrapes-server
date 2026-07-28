@@ -11,6 +11,7 @@ from django.db import connections, transaction
 from openbrain.brain.db import brain_cursor, dictfetchall
 from openbrain.brain.extraction.claims import extract_claims
 from openbrain.brain.services.claim_writer import (
+    load_experience_bindings,
     new_accumulator,
     write_claim_for_experience,
 )
@@ -145,9 +146,18 @@ def handle_notification(
     acc = new_accumulator()
     try:
         with transaction.atomic(), brain_cursor() as cursor:
+            # What the capture already resolved wins over re-resolving the surfaces
+            # the extractor emitted (#73).
+            bindings = load_experience_bindings(cursor, row["id"])
             for claim in extracted["claims"]:
                 write_claim_for_experience(
-                    cursor, row["id"], row["embedding"], claim, extracted_by, acc
+                    cursor,
+                    row["id"],
+                    row["embedding"],
+                    claim,
+                    extracted_by,
+                    acc,
+                    bindings,
                 )
             cursor.execute(_SET_STATUS_SQL, ["complete", row["id"]])
     except Exception as err:  # noqa: BLE001 — a failed write is also a retry.

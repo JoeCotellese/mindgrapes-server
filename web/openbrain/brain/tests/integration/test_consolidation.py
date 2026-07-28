@@ -50,6 +50,45 @@ CLAIMS_ANIMAL = {
 }
 
 
+CLAIMS_BOUND_SUBJECT = {
+    "claims": [
+        {
+            "subject": "Bonnie",
+            "subject_kind": "person",
+            "predicate": "works_at",
+            "predicate_detail": None,
+            "object": "Naftiko",
+            "object_kind": "org",
+            "support_kind": "verbatim",
+            "confidence": 0.9,
+        }
+    ]
+}
+
+
+def _seed_entity(kind, canonical_name):
+    """Insert one canonical entity and return its id."""
+    entity_id = str(uuid.uuid4())
+    with connection.cursor() as cur:
+        cur.execute(
+            "insert into brain.entities (id, kind, canonical_name, aliases, embedding) "
+            "values (%s::uuid, %s::brain.entity_kind, %s, array[%s]::text[], %s::vector)",
+            [entity_id, kind, canonical_name, canonical_name, _VEC_SEED_LIT],
+        )
+    return entity_id
+
+
+def _seed_mention(experience_id, entity_id, surface, field="people"):
+    """Link an experience to an entity the way _resolve_participants does at capture."""
+    with connection.cursor() as cur:
+        cur.execute(
+            "insert into brain.mentions "
+            "(experience_id, entity_id, surface_form, field) "
+            "values (%s::uuid, %s::uuid, %s, %s)",
+            [experience_id, entity_id, surface, field],
+        )
+
+
 def _seed_inprogress(content="B works at Initech Toronto.", attempts=1):
     """Insert one experience already in_progress with the given attempt count.
 
@@ -146,6 +185,37 @@ class TestHandleNotification:
         object_id, kind, name = rows[0]
         assert (kind, name) == ("animal", "Roger")
         assert object_id != person_roger  # the pet did NOT bind to the person
+
+    def test_claim_subject_reuses_the_capture_binding(self):
+        # #73: the capture resolved "Bonnie Ravina" and wrote a mention for it.
+        # The claim pass must consume that binding rather than re-resolving the
+        # shortened surface the extractor emitted — re-resolution scores "Bonnie"
+        # against the canonical below the reuse threshold and mints a fork.
+        bonnie = _seed_entity("person", "Bonnie Ravina")
+        eid = _seed_inprogress(content="Bonnie works at Naftiko.")
+        _seed_mention(eid, bonnie, "Bonnie Ravina")
+
+        outcome = handle_notification(eid, extract=lambda **_k: CLAIMS_BOUND_SUBJECT)
+
+        assert outcome["status"] == "complete"
+        with connection.cursor() as cur:
+            cur.execute(
+                "select c.subject_id::text "
+                "from brain.claims c "
+                "join brain.claim_sources cs on cs.claim_id = c.id "
+                "where cs.experience_id = %s::uuid",
+                [eid],
+            )
+            subjects = cur.fetchall()
+            # No fork: the shortened surface did not become its own person.
+            cur.execute(
+                "select count(*) from brain.entities "
+                "where kind = 'person'::brain.entity_kind and canonical_name = 'Bonnie'"
+            )
+            forks = cur.fetchone()[0]
+
+        assert subjects == [(bonnie,)]
+        assert forks == 0
 
     def test_first_person_claim_creates_no_junk_entity(self):
         # #56: "I met Jim" must NOT mint a person entity named "I". The self claim
