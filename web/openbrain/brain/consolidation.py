@@ -178,11 +178,12 @@ def handle_notification(
         }
 
     logger.info(
-        "consolidation: %s attempt=%s complete claims=%s skipped_self=%s",
+        "consolidation: %s attempt=%s complete claims=%s skipped_self=%s queued=%s",
         experience_id,
         attempts,
         acc["claims_inserted"],
         acc["claims_skipped_self"],
+        acc["provisional_binds_queued"],
     )
     return {
         "experience_id": experience_id,
@@ -191,6 +192,7 @@ def handle_notification(
         "claims_inserted": acc["claims_inserted"],
         "claim_sources_inserted": acc["claim_sources_inserted"],
         "claims_skipped_self": acc["claims_skipped_self"],
+        "provisional_binds_queued": acc["provisional_binds_queued"],
     }
 
 

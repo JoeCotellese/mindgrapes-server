@@ -217,6 +217,69 @@ class TestHandleNotification:
         assert subjects == [(bonnie,)]
         assert forks == 0
 
+    def test_unbound_borderline_surface_leaves_no_live_fork(self):
+        # #73: "Jon Smith" against an existing "John Smith" is the borderline band.
+        # The claim path used to mint a silent duplicate here — no merge candidate,
+        # no queue entry, and name_matching skips identical-name pairs, so nothing
+        # downstream would ever have caught it. It now goes through the shared
+        # resolver, which leaves an audited trail either way.
+        john = _seed_entity("person", "John Smith")
+        claims = {
+            "claims": [
+                {
+                    "subject": "Jon Smith",
+                    "subject_kind": "person",
+                    "predicate": "works_at",
+                    "predicate_detail": None,
+                    "object": "Initech",
+                    "object_kind": "org",
+                    "support_kind": "verbatim",
+                    "confidence": 0.9,
+                }
+            ]
+        }
+        eid = _seed_inprogress(content="Jon Smith works at Initech.")
+
+        outcome = handle_notification(eid, extract=lambda **_k: claims)
+
+        assert outcome["status"] == "complete"
+        with connection.cursor() as cur:
+            cur.execute(
+                "select c.subject_id::text "
+                "from brain.claims c "
+                "join brain.claim_sources cs on cs.claim_id = c.id "
+                "where cs.experience_id = %s::uuid",
+                [eid],
+            )
+            subject_id = cur.fetchone()[0]
+            # Any entity minted for the near-miss surface is merged away, not left
+            # standing as a second John Smith.
+            cur.execute(
+                "select count(*) from brain.entities "
+                "where kind = 'person'::brain.entity_kind "
+                "and canonical_name = 'Jon Smith' and merged_into is null"
+            )
+            live_forks = cur.fetchone()[0]
+            # And the decision is auditable: a merge candidate for the pair, or a
+            # queued question if the resolver was not confident enough to merge.
+            cur.execute(
+                "select count(*) from brain.merge_candidates "
+                "where entity_a = %s::uuid or entity_b = %s::uuid",
+                [john, john],
+            )
+            candidates = cur.fetchone()[0]
+            cur.execute(
+                "select count(*) from brain.disambiguations "
+                "where status = 'pending' "
+                "and context->>'provisional_entity_id' = %s",
+                [john],
+            )
+            queued = cur.fetchone()[0]
+
+        assert subject_id == john
+        assert live_forks == 0
+        assert candidates + queued >= 1
+
     def test_first_person_claim_creates_no_junk_entity(self):
         # #56: "I met Jim" must NOT mint a person entity named "I". The self claim
         # is dropped; the co-mentioned third party ("Jim") is still written.

@@ -3,6 +3,7 @@
 
 import pytest
 
+from openbrain.brain.services import claim_writer
 from openbrain.brain.services.claim_writer import (
     MATCH_THRESHOLD,
     _object_should_be_literal,
@@ -12,6 +13,7 @@ from openbrain.brain.services.claim_writer import (
     new_accumulator,
 )
 from openbrain.brain.services.name_matching import REUSE_THRESHOLD
+from openbrain.brain.services.reviews import SOURCE_CLAIM
 
 
 def _binding(entity_id, canonical_name, surface_form=None, kind="person", aliases=None):
@@ -133,6 +135,59 @@ def test_lookup_with_no_bindings_or_blank_name():
     assert lookup_binding(index, "   ", "person") is None
 
 
+def test_borderline_bind_queues_a_claim_sourced_question(monkeypatch):
+    # #73: an unbound borderline surface used to mint a silent duplicate. It now
+    # binds to the candidate and queues the guess — marked claim-sourced, since a
+    # reject has to repoint claims, not the mention this path never wrote.
+    opened = {}
+    monkeypatch.setattr(
+        claim_writer,
+        "resolve_or_create_entity",
+        lambda *a, **k: {
+            "entity_id": "existing-1",
+            "action": "provisional",
+            "provisional": True,
+            "kind": "person",
+            "candidate_entity_id": "existing-1",
+            "candidate_name": "John Smith",
+            "trgm_score": 0.62,
+            "verification_score": 0.7,
+        },
+    )
+    monkeypatch.setattr(
+        claim_writer,
+        "open_provisional_binding_on_cursor",
+        lambda _cursor, **kwargs: opened.update(kwargs),
+    )
+    acc = new_accumulator()
+
+    entity_id = claim_writer._bind_entity(
+        None, "exp-1", "Jon Smith", "person", None, acc, {}
+    )
+
+    assert entity_id == "existing-1"
+    assert acc["entities_created_for_objects"] == 0  # no fork minted
+    assert acc["provisional_binds_queued"] == 1
+    assert opened["source"] == SOURCE_CLAIM
+    assert opened["surface"] == "Jon Smith"
+    assert opened["candidate_entity_id"] == "existing-1"
+
+
+def test_bound_surface_never_reaches_the_resolver(monkeypatch):
+    def _boom(*_a, **_k):
+        raise AssertionError("a bound surface must not be re-resolved")
+
+    monkeypatch.setattr(claim_writer, "resolve_or_create_entity", _boom)
+    index = build_binding_index([_binding("e1", "Bonnie Ravina")])
+
+    assert (
+        claim_writer._bind_entity(
+            None, "exp-1", "Bonnie", "person", None, new_accumulator(), index
+        )
+        == "e1"
+    )
+
+
 def test_threshold_is_the_shared_reuse_constant():
     # #73: the claim path used to carry its own copy of 0.85, free to drift from
     # the capture path during retuning. One constant, one place to retune.
@@ -147,6 +202,7 @@ def test_new_accumulator_shape():
         "entities_created_for_objects": 0,
         "literal_objects_fell_back": 0,
         "claims_skipped_self": 0,
+        "provisional_binds_queued": 0,
     }
 
 

@@ -17,7 +17,7 @@ from django.test import override_settings
 
 from openbrain.brain.db import dictfetchall
 from openbrain.brain.services.claim_writer import (
-    _resolve_or_create_entity,
+    _bind_entity,
     new_accumulator,
 )
 from openbrain.brain.services.entities import (
@@ -583,21 +583,24 @@ def test_claim_writer_binds_full_name_split_across_aliases():
     )
     acc = new_accumulator()
     with connection.cursor() as cur:
-        bound = _resolve_or_create_entity(cur, "Zephyrine Quux", "person", None, acc)
+        bound = _bind_entity(
+            cur, _seed_experience(), "Zephyrine Quux", "person", None, acc, None
+        )
     assert bound == ent
     assert acc["entities_created_for_objects"] == 0
 
 
 def test_claim_writer_binds_existing_entity_on_exact_alias():
-    """The end of the chain the bug actually broke: _resolve_or_create_entity gates on
-    trgm_score >= MATCH_THRESHOLD (0.85), so a diluted ~0.26 fell through to _insert_entity
-    and minted the duplicate. Passing embedding=None keeps the vec channel out of it."""
+    """The end of the chain the bug actually broke: the claim-writer bind path gates on
+    trgm_score against MATCH_THRESHOLD (0.85), so a diluted ~0.26 fell through and minted
+    the duplicate. Passing embedding=None keeps the vec channel out of it. (#73 moved the
+    gate itself into the shared resolver; the surface this guards is unchanged.)"""
     ent = _seed_entity(
         kind="person", canonical_name="Zephyrine Quux", aliases=["Zeph", "Mr. Quux"]
     )
     acc = new_accumulator()
     with connection.cursor() as cur:
-        bound = _resolve_or_create_entity(cur, "Zeph", "person", None, acc)
+        bound = _bind_entity(cur, _seed_experience(), "Zeph", "person", None, acc, None)
     assert bound == ent
     assert acc["entities_created_for_objects"] == 0
 
@@ -611,8 +614,8 @@ def test_claim_writer_still_creates_entity_for_a_genuinely_new_name():
     )
     acc = new_accumulator()
     with connection.cursor() as cur:
-        created = _resolve_or_create_entity(
-            cur, "Zephyrine Hansen", "person", None, acc
+        created = _bind_entity(
+            cur, _seed_experience(), "Zephyrine Hansen", "person", None, acc, None
         )
     assert created != ent
     assert acc["entities_created_for_objects"] == 1
@@ -674,7 +677,7 @@ def test_claim_writer_binds_exact_alias_over_phonetic_decoy():
     ada, _ = _seed_ada_and_decoy()
     acc = new_accumulator()
     with connection.cursor() as cur:
-        bound = _resolve_or_create_entity(cur, "Ada", "person", None, acc)
+        bound = _bind_entity(cur, _seed_experience(), "Ada", "person", None, acc, None)
     assert bound == ada
     assert acc["entities_created_for_objects"] == 0
 

@@ -2,11 +2,21 @@
 # ABOUTME: resolve-or-create subject/object entities, then insert claims + claim_sources.
 
 from openbrain.brain.db import dictfetchall
+from openbrain.brain.services.entity_resolver import resolve_or_create_entity
 from openbrain.brain.services.name_matching import (
     REUSE_THRESHOLD,
     _is_abbreviation,
     _normalize,
 )
+from openbrain.brain.services.reviews import (
+    SOURCE_CLAIM,
+    open_provisional_binding_on_cursor,
+)
+
+# brain.mentions.field is ('people','topics') and this path writes no mention, so
+# the value is free — it rides in the disambiguation context to say which surface
+# the guess was about.
+_CLAIM_FIELD = "claims"
 
 # trgm_score (0..1) is the channel for entity binding, at the same cut-point the
 # capture path uses — retuning happens once, in name_matching. This path used to
@@ -17,12 +27,6 @@ MATCH_THRESHOLD = REUSE_THRESHOLD
 _RESOLVE_ENTITY_SQL = """
     select entity_id::text, trgm_score, phon_match, vec_score, fused_score
       from brain.resolve_entity(%s, %s::vector, %s::brain.entity_kind, 1)
-"""
-
-_INSERT_ENTITY_SQL = """
-    insert into brain.entities (kind, canonical_name, aliases, embedding)
-         values (%s::brain.entity_kind, %s, array[%s]::text[], %s::vector)
-      returning id::text as id
 """
 
 # The entities this experience's capture already resolved and wrote mentions for.
@@ -155,6 +159,7 @@ def new_accumulator() -> dict:
         "entities_created_for_objects": 0,
         "literal_objects_fell_back": 0,
         "claims_skipped_self": 0,
+        "provisional_binds_queued": 0,
     }
 
 
@@ -176,27 +181,48 @@ def _resolve_top(cursor, name: str, kind: str, embedding: str | None) -> dict | 
     return rows[0] if rows else None
 
 
-def _insert_entity(cursor, name: str, kind: str, embedding: str | None) -> str:
-    cursor.execute(_INSERT_ENTITY_SQL, [kind, name, name, embedding])
-    return dictfetchall(cursor)[0]["id"]
-
-
-def _resolve_or_create_entity(
+def _bind_entity(
     cursor,
+    experience_id: str,
     name: str,
     kind: str,
     embedding: str | None,
     acc: dict,
-    bindings: dict | None = None,
+    bindings: dict | None,
 ) -> str:
+    """Bind ``name`` to an entity: the capture's binding, else shared resolution.
+
+    Unbound surfaces go through the SAME resolver the capture path uses (#73) —
+    previously this path ran its own private match-or-create, which meant a
+    borderline guess minted a duplicate with no merge candidate and no queue entry
+    to catch it. A borderline guess now binds to the best candidate and opens a
+    disambiguation marked claim-sourced, so rejecting it repoints the claims this
+    pass wrote rather than a mention that does not exist.
+    """
     bound = lookup_binding(bindings, name, kind) if bindings else None
     if bound is not None:
         return bound
-    top = _resolve_top(cursor, name, kind, embedding)
-    if top and top["entity_id"] is not None and top["trgm_score"] >= MATCH_THRESHOLD:
-        return top["entity_id"]
-    acc["entities_created_for_objects"] += 1
-    return _insert_entity(cursor, name, kind, embedding)
+
+    outcome = resolve_or_create_entity(
+        cursor, experience_id, embedding, surface=name, field=_CLAIM_FIELD, kind=kind
+    )
+    if outcome["action"] == "created":
+        acc["entities_created_for_objects"] += 1
+    if outcome.get("provisional"):
+        open_provisional_binding_on_cursor(
+            cursor,
+            experience_id=experience_id,
+            surface=name,
+            field=_CLAIM_FIELD,
+            entity_kind=outcome["kind"],
+            candidate_entity_id=outcome["candidate_entity_id"],
+            candidate_name=outcome["candidate_name"],
+            trgm_score=outcome["trgm_score"],
+            verification_score=outcome["verification_score"],
+            source=SOURCE_CLAIM,
+        )
+        acc["provisional_binds_queued"] += 1
+    return outcome["entity_id"]
 
 
 def write_claim_for_experience(
@@ -228,8 +254,14 @@ def write_claim_for_experience(
         acc["claims_skipped_self"] += 1
         return
 
-    subject_id = _resolve_or_create_entity(
-        cursor, claim["subject"], claim["subject_kind"], embedding, acc, bindings
+    subject_id = _bind_entity(
+        cursor,
+        experience_id,
+        claim["subject"],
+        claim["subject_kind"],
+        embedding,
+        acc,
+        bindings,
     )
 
     object_entity_id: str | None = None
@@ -239,25 +271,29 @@ def write_claim_for_experience(
         if bindings
         else None
     )
-    top = (
-        None
-        if bound_object is not None
-        else _resolve_top(cursor, claim["object"], claim["object_kind"], embedding)
-    )
     if bound_object is not None:
         # A bound object never degrades to a literal: the capture already decided
         # this surface names an entity.
         object_entity_id = bound_object
-    elif _object_should_be_literal(claim, top):
-        object_literal = claim["object"]
-        acc["literal_objects_fell_back"] += 1
-    elif top and top["entity_id"] is not None and top["trgm_score"] >= MATCH_THRESHOLD:
-        object_entity_id = top["entity_id"]
+    elif claim["object_kind"] == "concept":
+        # Concept objects stay resolve-or-literal: routing them through the shared
+        # resolver would mint an entity for every free-form quote it can't match.
+        top = _resolve_top(cursor, claim["object"], claim["object_kind"], embedding)
+        if _object_should_be_literal(claim, top):
+            object_literal = claim["object"]
+            acc["literal_objects_fell_back"] += 1
+        else:
+            object_entity_id = top["entity_id"]
     else:
-        object_entity_id = _insert_entity(
-            cursor, claim["object"], claim["object_kind"], embedding
+        object_entity_id = _bind_entity(
+            cursor,
+            experience_id,
+            claim["object"],
+            claim["object_kind"],
+            embedding,
+            acc,
+            bindings,
         )
-        acc["entities_created_for_objects"] += 1
 
     cursor.execute(
         _INSERT_CLAIM_SQL,

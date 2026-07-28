@@ -24,6 +24,13 @@ DISAMBIGUATION_STATUS = "awaiting_user_disambiguation"
 # request_disambiguation. resolve_disambiguation keys its reconciliation on it.
 PROVISIONAL_BINDING_KIND = "provisional_binding"
 
+# Which path made the provisional guess. A capture-time guess owns a brain.mentions
+# row, so a reject repoints that mention; a claim-pass guess (#73) owns only the
+# claims it wrote, so a reject repoints those. Absent on rows written before #73,
+# hence the capture default — every one of them came from the capture path.
+SOURCE_CAPTURE = "capture"
+SOURCE_CLAIM = "claim"
+
 _INSERT_DISAMBIGUATION_ON_CURSOR_SQL = """
     insert into brain.disambiguations (question, options, context)
          values (%s, %s::jsonb, %s::jsonb)
@@ -42,6 +49,7 @@ def open_provisional_binding_on_cursor(
     candidate_name: str,
     trgm_score: float,
     verification_score: float,
+    source: str = SOURCE_CAPTURE,
 ) -> dict:
     """Open a provisional-binding disambiguation on the caller's cursor (#8).
 
@@ -51,6 +59,10 @@ def open_provisional_binding_on_cursor(
     the bind; reject repoints the mention onto a fresh entity. Returns the
     needs_disambiguation block (token + question + options + candidate ids) the
     capture response carries so the caller can reconcile without re-resolving.
+
+    ``source`` records which path guessed, because that decides what a reject can
+    repair: a capture-time guess owns a mention, a claim-pass guess (#73) owns the
+    claims it wrote and no mention at all.
     """
     options = [
         {
@@ -71,6 +83,7 @@ def open_provisional_binding_on_cursor(
         "surface": surface,
         "field": field,
         "entity_kind": entity_kind,
+        "source": source,
         "provisional_entity_id": candidate_entity_id,
         "candidate_entity_ids": [candidate_entity_id],
         "trgm_score": trgm_score,
@@ -790,6 +803,11 @@ def _reconcile_provisional_binding(context: dict, resolved: dict) -> dict:
     only the (experience, surface, field) mention onto a fresh entity via
     split_mention, leaving any co-mention of the same candidate in that experience
     untouched, with a correction_events audit trail.
+
+    A claim-pass guess (#73) is rejected the same way but against a different
+    target: it never wrote a mention, so split_mention would move nothing and the
+    human's answer would be a silent no-op. split_claims moves what that guess
+    actually produced — the claims from that experience.
     """
     action = (resolved.get("value") or {}).get("action")
     provisional_entity_id = context["provisional_entity_id"]
@@ -802,6 +820,15 @@ def _reconcile_provisional_binding(context: dict, resolved: dict) -> dict:
             "entity_id": provisional_entity_id,
             "alias_appended": alias_appended,
         }
+    if action == "reject" and context.get("source") == SOURCE_CLAIM:
+        outcome = entities.split_claims(
+            provisional_entity_id,
+            experience_id=context["experience_id"],
+            into={"canonical_name": context["surface"], "kind": context["entity_kind"]},
+            reason="provisional claim binding rejected via resolve_disambiguation",
+            created_by="mcp:resolve_disambiguation:reject",
+        )
+        return {"action": "repointed", **outcome}
     if action == "reject":
         outcome = entities.split_mention(
             provisional_entity_id,
