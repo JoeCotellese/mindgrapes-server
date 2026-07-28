@@ -11,6 +11,7 @@ from openbrain.brain.services.claim_writer import (
     lookup_binding,
     new_accumulator,
 )
+from openbrain.brain.services.name_matching import REUSE_THRESHOLD
 
 
 def _binding(entity_id, canonical_name, surface_form=None, kind="person", aliases=None):
@@ -130,6 +131,12 @@ def test_lookup_with_no_bindings_or_blank_name():
     index = build_binding_index([_binding("e1", "Bonnie Ravina")])
     assert lookup_binding({}, "Bonnie Ravina", "person") is None
     assert lookup_binding(index, "   ", "person") is None
+
+
+def test_threshold_is_the_shared_reuse_constant():
+    # #73: the claim path used to carry its own copy of 0.85, free to drift from
+    # the capture path during retuning. One constant, one place to retune.
+    assert MATCH_THRESHOLD is REUSE_THRESHOLD
 
 
 def test_new_accumulator_shape():

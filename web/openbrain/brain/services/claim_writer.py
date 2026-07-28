@@ -2,13 +2,17 @@
 # ABOUTME: resolve-or-create subject/object entities, then insert claims + claim_sources.
 
 from openbrain.brain.db import dictfetchall
-from openbrain.brain.services.name_matching import _is_abbreviation, _normalize
+from openbrain.brain.services.name_matching import (
+    REUSE_THRESHOLD,
+    _is_abbreviation,
+    _normalize,
+)
 
-# trgm_score (0..1) is the channel for entity binding. This is a DISTINCT policy
-# from entity_resolver.py: an inclusive >= threshold, and NO alias-append / NO
-# merge-candidate / NO mention side effects. It mirrors the historical claims
-# backfill exactly so backfilled and consolidation-written rows are bit-identical in shape.
-MATCH_THRESHOLD = 0.85
+# trgm_score (0..1) is the channel for entity binding, at the same cut-point the
+# capture path uses — retuning happens once, in name_matching. This path used to
+# carry its own copy of the constant to mirror the historical claims backfill;
+# #73 ended that mirror, since the backfill's policy was the thing minting forks.
+MATCH_THRESHOLD = REUSE_THRESHOLD
 
 _RESOLVE_ENTITY_SQL = """
     select entity_id::text, trgm_score, phon_match, vec_score, fused_score
