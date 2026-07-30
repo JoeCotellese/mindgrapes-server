@@ -191,7 +191,7 @@ Use when: the caller wants graph reachability ("everyone I know through X", "org
 Don't use when: the caller only needs entities mentioned in one experience or on one date — that's who_was_at and is far cheaper. Don't use for free-text similarity either; that's search_thoughts.
 On empty result: lower min_confidence (the default 0.6 floor may have pruned every multi-hop chain), increase max_hops, or call resolve_entity to confirm the starting entity_id is correct (a typo in the seed will make the graph look empty).
 
-Cost: medium (recursive CTE, bounded by max_hops; cost grows roughly with the local degree of the seed).
+Cost: medium (recursive CTE, bounded by max_hops; cost grows roughly with the local degree of the seed — counting the edges of every entity soft-merged into it, since those are walked too).
 Idempotent: yes.
 Reversible: N/A (read-only).
 Side effects: none."""

@@ -280,10 +280,14 @@ def test_relationships_to_reaches_inbound_edge_of_a_merged_loser():
 
 def test_relationships_to_seeding_a_tombstone_matches_its_survivor():
     # Seeding the loser id resolves to the survivor, so both ids see one graph.
+    # Both sides must carry the inherited edge — asserting only set equality would
+    # pass on the pre-fix function, where both sides were equally empty.
     survivor = _seed_entity(canonical_name="Merge Survivor Seed")
     loser = _seed_entity(canonical_name="Merge Loser Seed")
     inherited = _seed_entity(canonical_name="Loser Neighbor Seed")
+    own = _seed_entity(canonical_name="Survivor Neighbor Seed")
     _seed_claim(loser, inherited)
+    _seed_claim(survivor, own)
     _merge_entity(loser, survivor)
 
     from_survivor = {
@@ -294,5 +298,93 @@ def test_relationships_to_seeding_a_tombstone_matches_its_survivor():
         r["entity_id"]
         for r in relationships_to(loser, max_hops=1, min_confidence=0)["related"]
     }
-    assert inherited in from_survivor
+    assert {inherited, own} <= from_survivor
+    assert {inherited, own} <= from_loser
     assert from_survivor == from_loser
+
+
+def test_relationships_to_inherited_edge_carries_correct_hops_and_confidence():
+    # An inherited edge is a real 1-hop edge of the survivor, at the claim's own
+    # confidence — not a discounted or extra-hop path.
+    survivor = _seed_entity(canonical_name="Metric Survivor")
+    loser = _seed_entity(canonical_name="Metric Loser")
+    near = _seed_entity(canonical_name="Metric Near")
+    far = _seed_entity(canonical_name="Metric Far")
+    _seed_claim(loser, near, confidence=0.9)
+    _seed_claim(near, far, confidence=0.5)
+    _merge_entity(loser, survivor)
+
+    by_id = {
+        r["entity_id"]: r
+        for r in relationships_to(survivor, max_hops=2, min_confidence=0)["related"]
+    }
+    assert by_id[near]["hops"] == 1
+    assert by_id[near]["confidence"] == pytest.approx(0.9, abs=1e-3)
+    # And the chain continues through the inherited edge, compounding normally.
+    assert by_id[far]["hops"] == 2
+    assert by_id[far]["confidence"] == pytest.approx(0.45, abs=1e-3)
+
+
+def test_relationships_to_floor_prunes_a_shaky_inherited_edge():
+    # The confidence floor applies to inherited edges exactly as to native ones.
+    survivor = _seed_entity(canonical_name="Floor Survivor")
+    loser = _seed_entity(canonical_name="Floor Loser")
+    strong = _seed_entity(canonical_name="Floor Strong")
+    shaky = _seed_entity(canonical_name="Floor Shaky")
+    _seed_claim(loser, strong, confidence=0.9)
+    _seed_claim(loser, shaky, confidence=0.5)
+    _merge_entity(loser, survivor)
+
+    reached = {
+        r["entity_id"]
+        for r in relationships_to(survivor, max_hops=1, min_confidence=0.6)["related"]
+    }
+    assert strong in reached
+    assert shaky not in reached
+
+
+def test_relationships_to_collapses_an_edge_inside_one_merge_group():
+    # Both endpoints merge into the same survivor, so the claim between them
+    # resolves to a self-edge; the visited guard drops it and neither loser is
+    # reported as a neighbour of the group. Documented in init/22, pinned here.
+    survivor = _seed_entity(canonical_name="Selfedge Survivor")
+    left = _seed_entity(canonical_name="Selfedge Left")
+    right = _seed_entity(canonical_name="Selfedge Right")
+    outside = _seed_entity(canonical_name="Selfedge Outside")
+    _seed_claim(left, right)
+    _seed_claim(left, outside)
+    _merge_entity(left, survivor)
+    _merge_entity(right, survivor)
+
+    reached = {
+        r["entity_id"]
+        for r in relationships_to(survivor, max_hops=2, min_confidence=0)["related"]
+    }
+    assert outside in reached
+    assert survivor not in reached
+    assert left not in reached and right not in reached
+
+
+def test_relationships_to_after_a_chained_merge_is_flattened_by_path_compression():
+    # merge_entities path-compresses, so A->B plus merge(B, C) leaves A and B both
+    # pointing at C. Traversal from C must therefore see A's edges too — the case
+    # that stranded four entities on the live brain during #79.
+    from openbrain.brain.services.entities import merge_entities
+
+    c = _seed_entity(canonical_name="Chained Root")
+    b = _seed_entity(canonical_name="Chained Middle")
+    a = _seed_entity(canonical_name="Chained Leaf")
+    a_edge = _seed_entity(canonical_name="Chained Leaf Neighbor")
+    b_edge = _seed_entity(canonical_name="Chained Middle Neighbor")
+    _seed_claim(a, a_edge)
+    _seed_claim(b, b_edge)
+    _merge_entity(a, b)
+
+    merge_entities(b, c)
+
+    reached = {
+        r["entity_id"]
+        for r in relationships_to(c, max_hops=1, min_confidence=0)["related"]
+    }
+    assert b_edge in reached
+    assert a_edge in reached, "the twice-merged node's edges were lost"

@@ -151,6 +151,109 @@ def test_merge_appends_aliases_sets_merged_into_and_audits():
     )
 
 
+def test_merge_repoints_the_losers_own_losers_so_pointers_stay_flat():
+    # merged_into is a pointer to the *survivor*, one level deep. Merging B into C
+    # while A already points at B must repoint A too, or A->B->C is a chain that
+    # every merge-aware read path then has to walk (#81). Six of these existed on
+    # the live brain, four minted by #79's batch.
+    c = _seed_entity(canonical_name="Chain Root")
+    b = _seed_entity(canonical_name="Chain Middle")
+    a = _seed_entity(canonical_name="Chain Leaf", merged_into=b)
+
+    merge_entities(b, c)
+
+    assert (
+        _scalar("select merged_into::text from brain.entities where id=%s::uuid", [b])
+        == c
+    )
+    assert (
+        _scalar("select merged_into::text from brain.entities where id=%s::uuid", [a])
+        == c
+    ), "A was left pointing at B, which is now a tombstone"
+
+
+def test_merge_repointing_is_audited_per_repointed_entity():
+    # The repoint is a mutation of A, so it owes its own correction_events row —
+    # the house rule is append-mostly with an audit trail, not silent fixups.
+    c = _seed_entity(canonical_name="Audit Root")
+    b = _seed_entity(canonical_name="Audit Middle")
+    a = _seed_entity(canonical_name="Audit Leaf", merged_into=b)
+
+    merge_entities(b, c)
+
+    assert (
+        _scalar(
+            "select count(*) from brain.correction_events "
+            "where target_kind='entity' and target_id=%s::uuid",
+            [a],
+        )
+        == 1
+    )
+
+
+def test_merge_repoints_every_loser_not_just_one():
+    c = _seed_entity(canonical_name="Fanout Root")
+    b = _seed_entity(canonical_name="Fanout Middle")
+    leaves = [
+        _seed_entity(canonical_name=f"Fanout Leaf {i}", merged_into=b) for i in range(3)
+    ]
+
+    merge_entities(b, c)
+
+    for leaf in leaves:
+        assert (
+            _scalar(
+                "select merged_into::text from brain.entities where id=%s::uuid", [leaf]
+            )
+            == c
+        )
+
+
+def test_unmerge_restores_entities_that_path_compression_repointed():
+    # A was judged same-as-B. Merging B into C repoints A to C. Unmerging B says
+    # "B is not C" — so A, whose only evidence ties it to B, must follow B back.
+    # Without this, path compression makes a merge irreversible for A.
+    c = _seed_entity(canonical_name="Undo Root")
+    b = _seed_entity(canonical_name="Undo Middle")
+    a = _seed_entity(canonical_name="Undo Leaf", merged_into=b)
+
+    merge_entities(b, c)
+    unmerge_entity(b)
+
+    assert (
+        _scalar("select merged_into::text from brain.entities where id=%s::uuid", [b])
+        is None
+    )
+    assert (
+        _scalar("select merged_into::text from brain.entities where id=%s::uuid", [a])
+        == b
+    ), "A was stranded on C after its merge into B was undone"
+
+
+def test_unmerge_leaves_unrelated_losers_of_the_winner_alone():
+    # Only the entities this particular merge repointed come back. A loser that
+    # pointed at the winner independently must not be dragged along.
+    c = _seed_entity(canonical_name="Scope Root")
+    b = _seed_entity(canonical_name="Scope Middle")
+    a = _seed_entity(canonical_name="Scope Leaf", merged_into=b)
+    independent = _seed_entity(canonical_name="Scope Independent", merged_into=c)
+
+    merge_entities(b, c)
+    unmerge_entity(b)
+
+    assert (
+        _scalar("select merged_into::text from brain.entities where id=%s::uuid", [a])
+        == b
+    )
+    assert (
+        _scalar(
+            "select merged_into::text from brain.entities where id=%s::uuid",
+            [independent],
+        )
+        == c
+    )
+
+
 def test_merge_already_merged_loser_raises():
     other = _seed_entity()
     winner = _seed_entity()
