@@ -9,9 +9,88 @@ integration suite.
 
 import pytest
 
-from openbrain.brain.services.reviews import match_choice, plan_correction_dispatch
+from openbrain.brain.services import reviews
+from openbrain.brain.services.reviews import (
+    SOURCE_CAPTURE,
+    SOURCE_CLAIM,
+    _reconcile_provisional_binding,
+    match_choice,
+    plan_correction_dispatch,
+)
 
 TARGET = "22222222-2222-2222-2222-222222222222"
+
+
+# --- provisional-binding reject dispatch --------------------------------------
+
+
+def _binding_context(source):
+    return {
+        "experience_id": "exp-1",
+        "surface": "Jon Smith",
+        "field": "people" if source == SOURCE_CAPTURE else "claims",
+        "entity_kind": "person",
+        "source": source,
+        "provisional_entity_id": "existing-1",
+    }
+
+
+def _spy_entities(monkeypatch):
+    calls = {}
+
+    def _spy(name, result):
+        def _recorded(*_args, **kwargs):
+            calls[name] = kwargs
+            return result
+
+        return _recorded
+
+    monkeypatch.setattr(
+        reviews.entities,
+        "split_mention",
+        _spy("split_mention", {"mentions_repointed": 1}),
+    )
+    monkeypatch.setattr(
+        reviews.entities, "split_claims", _spy("split_claims", {"claims_repointed": 2})
+    )
+    return calls
+
+
+def test_reject_of_a_capture_guess_repoints_the_mention(monkeypatch):
+    calls = _spy_entities(monkeypatch)
+
+    outcome = _reconcile_provisional_binding(
+        _binding_context(SOURCE_CAPTURE), {"value": {"action": "reject"}}
+    )
+
+    assert outcome["action"] == "repointed"
+    assert "split_mention" in calls and "split_claims" not in calls
+
+
+def test_reject_of_a_claim_guess_repoints_the_claims(monkeypatch):
+    # #73: the claim pass writes no mention, so split_mention would move nothing
+    # and the human's "no, different" would be a silent no-op.
+    calls = _spy_entities(monkeypatch)
+
+    outcome = _reconcile_provisional_binding(
+        _binding_context(SOURCE_CLAIM), {"value": {"action": "reject"}}
+    )
+
+    assert outcome["action"] == "repointed"
+    assert outcome["claims_repointed"] == 2
+    assert "split_claims" in calls and "split_mention" not in calls
+    assert calls["split_claims"]["experience_id"] == "exp-1"
+
+
+def test_reject_without_a_source_marker_still_repoints_the_mention(monkeypatch):
+    # Rows written before #73 carry no source; every one of them is capture-path.
+    calls = _spy_entities(monkeypatch)
+    context = _binding_context(SOURCE_CAPTURE)
+    del context["source"]
+
+    _reconcile_provisional_binding(context, {"value": {"action": "reject"}})
+
+    assert "split_mention" in calls and "split_claims" not in calls
 
 
 # --- plan_correction_dispatch -------------------------------------------------

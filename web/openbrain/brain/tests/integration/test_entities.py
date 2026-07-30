@@ -17,7 +17,7 @@ from django.test import override_settings
 
 from openbrain.brain.db import dictfetchall
 from openbrain.brain.services.claim_writer import (
-    _resolve_or_create_entity,
+    _bind_entity,
     new_accumulator,
 )
 from openbrain.brain.services.entities import (
@@ -583,21 +583,24 @@ def test_claim_writer_binds_full_name_split_across_aliases():
     )
     acc = new_accumulator()
     with connection.cursor() as cur:
-        bound = _resolve_or_create_entity(cur, "Zephyrine Quux", "person", None, acc)
+        bound = _bind_entity(
+            cur, _seed_experience(), "Zephyrine Quux", "person", None, acc, None
+        )
     assert bound == ent
     assert acc["entities_created_for_objects"] == 0
 
 
 def test_claim_writer_binds_existing_entity_on_exact_alias():
-    """The end of the chain the bug actually broke: _resolve_or_create_entity gates on
-    trgm_score >= MATCH_THRESHOLD (0.85), so a diluted ~0.26 fell through to _insert_entity
-    and minted the duplicate. Passing embedding=None keeps the vec channel out of it."""
+    """The end of the chain the bug actually broke: the claim-writer bind path gates on
+    trgm_score against MATCH_THRESHOLD (0.85), so a diluted ~0.26 fell through and minted
+    the duplicate. Passing embedding=None keeps the vec channel out of it. (#73 moved the
+    gate itself into the shared resolver; the surface this guards is unchanged.)"""
     ent = _seed_entity(
         kind="person", canonical_name="Zephyrine Quux", aliases=["Zeph", "Mr. Quux"]
     )
     acc = new_accumulator()
     with connection.cursor() as cur:
-        bound = _resolve_or_create_entity(cur, "Zeph", "person", None, acc)
+        bound = _bind_entity(cur, _seed_experience(), "Zeph", "person", None, acc, None)
     assert bound == ent
     assert acc["entities_created_for_objects"] == 0
 
@@ -611,11 +614,85 @@ def test_claim_writer_still_creates_entity_for_a_genuinely_new_name():
     )
     acc = new_accumulator()
     with connection.cursor() as cur:
-        created = _resolve_or_create_entity(
-            cur, "Zephyrine Hansen", "person", None, acc
+        created = _bind_entity(
+            cur, _seed_experience(), "Zephyrine Hansen", "person", None, acc, None
         )
     assert created != ent
     assert acc["entities_created_for_objects"] == 1
+
+
+# --- #73: a dual-channel competitor must not displace an exact name match ------
+#
+# The #17 fix stopped a phon-only competitor from outranking a perfect trgm match,
+# but a competitor that scores on BOTH trgm and vec carries two full RRF terms:
+# trgm rank 2 + vec rank 1 = 1/62 + 1/61 ≈ 0.0325, above an exact match that holds
+# only trgm rank 1 (1/61 ≈ 0.0164). It then heads the fused list, so top_k=1 callers
+# bind to it and resolve_entity bands its recommendation off the wrong candidate —
+# which is how a trgm 1.0 row came back recommending 'create' in production.
+
+
+def _seed_entity_with_embedding(canonical_name, embedding, kind="person"):
+    eid = _new_id()
+    with connection.cursor() as cur:
+        cur.execute(
+            "insert into brain.entities (id, kind, canonical_name, aliases, embedding) "
+            "values (%s::uuid, %s::brain.entity_kind, %s, '{}'::text[], %s::vector)",
+            [eid, kind, canonical_name, embedding],
+        )
+    return eid
+
+
+_QUERY_VEC = [0.02] * 1536
+_QUERY_VEC_LIT = "[" + ",".join(["0.02"] * 1536) + "]"
+
+
+def _query_embed(_text):
+    return _QUERY_VEC
+
+
+def _seed_exact_and_dual_channel_decoy():
+    """Exact name with NO embedding (trgm rank 1 only) vs a near name whose embedding
+    IS the query vector (trgm rank 2 + vec rank 1). Verified against the dev brain:
+    no live person entity trgm-matches 'Zoltan Kovacs'."""
+    exact = _seed_entity(kind="person", canonical_name="Zoltan Kovacs")
+    decoy = _seed_entity_with_embedding("Zoltan Kov", _QUERY_VEC_LIT)
+    return exact, decoy
+
+
+@override_settings(
+    BRAIN_EMBED_FN="openbrain.brain.tests.integration.test_entities._query_embed"
+)
+def test_recommendation_survives_a_dual_channel_competitor():
+    exact, decoy = _seed_exact_and_dual_channel_decoy()
+
+    result = resolve_entity(name="Zoltan Kovacs", kind="person", top_k=5)
+
+    ids = [c["entity_id"] for c in result["candidates"]]
+    assert exact in ids and decoy in ids
+    # The exact match is in the list either way; the bug was banding the
+    # recommendation off whatever fusion put first.
+    assert result["recommendation"] == "reuse"
+
+
+@override_settings(
+    BRAIN_EMBED_FN="openbrain.brain.tests.integration.test_entities._query_embed"
+)
+def test_top_k_1_caller_binds_the_exact_match_not_the_competitor():
+    exact, decoy = _seed_exact_and_dual_channel_decoy()
+    exp = _seed_experience()
+
+    with connection.cursor() as cur:
+        outcome = resolve_or_create_entity(
+            cur,
+            exp,
+            _QUERY_VEC_LIT,
+            surface="Zoltan Kovacs",
+            field="people",
+            kind="person",
+        )
+
+    assert outcome["entity_id"] == exact
+    assert outcome["action"] == "matched"
 
 
 # --- #17: phon is a tiebreak, not a channel that can outrank a trgm match ------
@@ -674,7 +751,7 @@ def test_claim_writer_binds_exact_alias_over_phonetic_decoy():
     ada, _ = _seed_ada_and_decoy()
     acc = new_accumulator()
     with connection.cursor() as cur:
-        bound = _resolve_or_create_entity(cur, "Ada", "person", None, acc)
+        bound = _bind_entity(cur, _seed_experience(), "Ada", "person", None, acc, None)
     assert bound == ada
     assert acc["entities_created_for_objects"] == 0
 

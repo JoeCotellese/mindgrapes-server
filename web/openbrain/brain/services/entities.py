@@ -653,6 +653,168 @@ def split_mention(
     }
 
 
+def _repoint_claims_in_experience(
+    cursor,
+    *,
+    source_id: str,
+    target_id: str,
+    experience_id: str,
+    reason: str | None,
+    created_by: str,
+) -> dict:
+    """HARD move of ONE experience's claim bindings onto target_id (caller's txn).
+
+    Claim-path sibling of _repoint_single_mention (#73): a bind the consolidation
+    pass guessed produced claims, not a mention, so rejecting that guess moves the
+    claims that guess produced — subject and object side — and leaves every other
+    reference to the source alone. Mentions are deliberately untouched here, the
+    mirror image of _repoint_single_mention leaving claims alone. One
+    correction_events row only when something actually moved.
+    """
+    cursor.execute(
+        """
+        update brain.claims c
+           set subject_id = %s::uuid
+         where c.subject_id = %s::uuid
+           and exists (
+             select 1 from brain.claim_sources cs
+              where cs.claim_id = c.id
+                and cs.experience_id = %s::uuid
+           )
+        """,
+        [target_id, source_id, experience_id],
+    )
+    subjects_repointed = cursor.rowcount or 0
+
+    cursor.execute(
+        """
+        update brain.claims c
+           set object_entity_id = %s::uuid
+         where c.object_entity_id = %s::uuid
+           and exists (
+             select 1 from brain.claim_sources cs
+              where cs.claim_id = c.id
+                and cs.experience_id = %s::uuid
+           )
+        """,
+        [target_id, source_id, experience_id],
+    )
+    objects_repointed = cursor.rowcount or 0
+
+    claims_repointed = subjects_repointed + objects_repointed
+    correction_ids: list[str] = []
+    if claims_repointed > 0:
+        correction_ids.append(
+            record_correction(
+                cursor,
+                target_kind="entity",
+                target_id=source_id,
+                before={"entity_id": source_id, "experience_id": experience_id},
+                after={"entity_id": target_id, "experience_id": experience_id},
+                reason=reason,
+                created_by=created_by,
+            )
+        )
+    return {
+        "claims_repointed": claims_repointed,
+        "claims_subject_repointed": subjects_repointed,
+        "claims_object_repointed": objects_repointed,
+        "correction_event_ids": correction_ids,
+    }
+
+
+def split_claims(
+    source_entity_id: str,
+    experience_id: str,
+    into: dict,
+    *,
+    reason: str | None = None,
+    created_by: str = "mcp:split_claims",
+) -> dict:
+    """Split one experience's claims off an entity the claim pass guessed wrong.
+
+    Claim-scoped sibling of split_mention: where that one unbinds a rejected
+    provisional PARTICIPANT (which owns a mention), this unbinds a rejected
+    provisional CLAIM bind (which owns claims and no mention, #73). The claims
+    written from ``experience_id`` move onto a fresh or existing target; claims
+    from every other experience stay with the source.
+    """
+    with transaction.atomic(), brain_cursor() as cursor:
+        cursor.execute(
+            "select id::text, kind::text as kind, merged_into::text "
+            "from brain.entities where id = %s::uuid for update",
+            [source_entity_id],
+        )
+        src_rows = dictfetchall(cursor)
+        if not src_rows:
+            raise ValueError(
+                f"split_claims: source_entity_id {source_entity_id} not found"
+            )
+        source = src_rows[0]
+        if source["merged_into"]:
+            raise ValueError(
+                f"split_claims: source_entity_id {source_entity_id} is merged into "
+                f"{source['merged_into']}; unmerge it first"
+            )
+
+        normalized = normalize_split_into(into, source["kind"])
+
+        target_created = False
+        if normalized["mode"] == "existing":
+            cursor.execute(
+                "select id::text, merged_into::text "
+                "from brain.entities where id = %s::uuid for update",
+                [normalized["entity_id"]],
+            )
+            tgt_rows = dictfetchall(cursor)
+            if not tgt_rows:
+                raise ValueError(
+                    f"split_claims: into.entity_id {normalized['entity_id']} not found"
+                )
+            if tgt_rows[0]["merged_into"]:
+                raise ValueError(
+                    f"split_claims: into.entity_id {normalized['entity_id']} is itself "
+                    f"merged into {tgt_rows[0]['merged_into']}"
+                )
+            target_id = normalized["entity_id"]
+        else:
+            cursor.execute(
+                """
+                insert into brain.entities (kind, canonical_name, aliases, metadata)
+                     values (%s::brain.entity_kind, %s, %s::text[], %s::jsonb)
+                  returning id::text
+                """,
+                [
+                    normalized["kind"],
+                    normalized["canonical_name"],
+                    normalized["aliases"],
+                    json.dumps(normalized["metadata"]),
+                ],
+            )
+            target_id = dictfetchall(cursor)[0]["id"]
+            target_created = True
+
+        if target_id == source_entity_id:
+            raise ValueError("split_claims: target and source must differ")
+
+        repoint = _repoint_claims_in_experience(
+            cursor,
+            source_id=source_entity_id,
+            target_id=target_id,
+            experience_id=experience_id,
+            reason=reason,
+            created_by=created_by,
+        )
+
+    return {
+        "source_entity_id": source_entity_id,
+        "target_entity_id": target_id,
+        "target_created": target_created,
+        "claims_repointed": repoint["claims_repointed"],
+        "correction_event_ids": repoint["correction_event_ids"],
+    }
+
+
 def unmerge_entity(
     entity_id: str,
     *,
@@ -777,9 +939,12 @@ def resolve_entity(
         row["vec_score"] = float(row["vec_score"])
         row["fused_score"] = float(row["fused_score"])
 
-    # Band the top candidate's name-similarity server-side so the 0.85/0.55
+    # Band the best name-similarity in the result server-side so the 0.85/0.55
     # cut-points live in one place (#8), not replicated across client prompts.
-    top_trgm = candidates[0]["trgm_score"] if candidates else 0.0
+    # Best-of, not candidates[0]: fusion can seat a dual-channel competitor above
+    # an exact match (#73), and banding off the head then recommends 'create'
+    # while a trgm 1.0 row sits further down the same response.
+    top_trgm = max((c["trgm_score"] for c in candidates), default=0.0)
     return {
         "query_name": name,
         "query_kind": kind,

@@ -2,22 +2,46 @@
 # ABOUTME: resolve-or-create subject/object entities, then insert claims + claim_sources.
 
 from openbrain.brain.db import dictfetchall
+from openbrain.brain.services.entity_resolver import resolve_or_create_entity
+from openbrain.brain.services.name_matching import (
+    REUSE_THRESHOLD,
+    _is_abbreviation,
+    _normalize,
+)
+from openbrain.brain.services.reviews import (
+    SOURCE_CLAIM,
+    open_provisional_binding_on_cursor,
+)
 
-# trgm_score (0..1) is the channel for entity binding. This is a DISTINCT policy
-# from entity_resolver.py: an inclusive >= threshold, and NO alias-append / NO
-# merge-candidate / NO mention side effects. It mirrors the historical claims
-# backfill exactly so backfilled and consolidation-written rows are bit-identical in shape.
-MATCH_THRESHOLD = 0.85
+# brain.mentions.field is ('people','topics') and this path writes no mention, so
+# the value is free — it rides in the disambiguation context to say which surface
+# the guess was about.
+_CLAIM_FIELD = "claims"
+
+# trgm_score (0..1) is the channel for entity binding, at the same cut-point the
+# capture path uses — retuning happens once, in name_matching. This path used to
+# carry its own copy of the constant to mirror the historical claims backfill;
+# #73 ended that mirror, since the backfill's policy was the thing minting forks.
+MATCH_THRESHOLD = REUSE_THRESHOLD
 
 _RESOLVE_ENTITY_SQL = """
     select entity_id::text, trgm_score, phon_match, vec_score, fused_score
       from brain.resolve_entity(%s, %s::vector, %s::brain.entity_kind, 1)
 """
 
-_INSERT_ENTITY_SQL = """
-    insert into brain.entities (kind, canonical_name, aliases, embedding)
-         values (%s::brain.entity_kind, %s, array[%s]::text[], %s::vector)
-      returning id::text as id
+# The entities this experience's capture already resolved and wrote mentions for.
+# merged_into is followed one level (as init/06-tools.sql does) so a mention whose
+# entity was merged after capture binds to the survivor, not the tombstone.
+_EXPERIENCE_BINDINGS_SQL = """
+    select m.surface_form,
+           coalesce(t.id, e.id)::text                    as entity_id,
+           coalesce(t.kind, e.kind)::text                as kind,
+           coalesce(t.canonical_name, e.canonical_name)  as canonical_name,
+           coalesce(t.aliases, e.aliases)                as aliases
+      from brain.mentions m
+      join brain.entities e on e.id = m.entity_id
+      left join brain.entities t on t.id = e.merged_into
+     where m.experience_id = %s::uuid
 """
 
 _INSERT_CLAIM_SQL = """
@@ -47,10 +71,19 @@ _INSERT_CLAIM_SOURCE_SQL = """
 # things to remember and must not be caught. See #56.
 _OWNER_SELF_FORMS = frozenset(
     {
-        "i", "me", "my", "mine", "myself", "the user",
+        "i",
+        "me",
+        "my",
+        "mine",
+        "myself",
+        "the user",
         # Plural: "we decided", "our" — bare pronouns mint the same junk entity.
         # Multi-word ("our team") survives, since this is a whole-string match.
-        "we", "us", "our", "ours", "ourselves",
+        "we",
+        "us",
+        "our",
+        "ours",
+        "ourselves",
     }
 )
 
@@ -61,6 +94,63 @@ def is_owner_self_reference(name: str) -> bool:
     return normalized in _OWNER_SELF_FORMS
 
 
+def build_binding_index(rows: list[dict]) -> dict:
+    """Index capture-time bindings as (kind, normalized name) -> entity_id (#73).
+
+    Every name the capture already tied to an entity is a key: the mention's own
+    surface form plus that entity's canonical name and aliases. A key two DIFFERENT
+    entities both claim is dropped rather than guessed — the capture bound both, so
+    a coin-flip here is the failure this exists to prevent.
+    """
+    index: dict[tuple[str, str], str | None] = {}
+    for row in rows:
+        names = [row["surface_form"], row["canonical_name"], *(row["aliases"] or [])]
+        for name in names:
+            normalized = _normalize(name)
+            if not normalized:
+                continue
+            key = (row["kind"], normalized)
+            if key in index and index[key] != row["entity_id"]:
+                index[key] = None
+            else:
+                index.setdefault(key, row["entity_id"])
+    return {key: value for key, value in index.items() if value is not None}
+
+
+def load_experience_bindings(cursor, experience_id: str) -> dict:
+    """Load and index what the capture bound for ``experience_id``."""
+    cursor.execute(_EXPERIENCE_BINDINGS_SQL, [experience_id])
+    return build_binding_index(dictfetchall(cursor))
+
+
+def lookup_binding(index: dict, name: str, kind: str) -> str | None:
+    """The entity this capture already bound for ``name``, or None to resolve it.
+
+    Exact normalized match first. Failing that, a bare given name the extractor
+    shortened ("Bonnie" for the bound "Bonnie Ravina") binds when exactly one bound
+    entity of that kind expands it. Two bound Bonnies is ambiguous, so it falls
+    through to resolution rather than picking one — the namesake caution in
+    name_matching applies here too, just narrowed to one experience's participants.
+    """
+    normalized = _normalize(name)
+    if not normalized:
+        return None
+
+    exact = index.get((kind, normalized))
+    if exact is not None:
+        return exact
+
+    tokens = normalized.split()
+    if len(tokens) != 1:
+        return None
+    expansions = {
+        entity_id
+        for (indexed_kind, indexed_name), entity_id in index.items()
+        if indexed_kind == kind and _is_abbreviation(tokens, indexed_name.split())
+    }
+    return expansions.pop() if len(expansions) == 1 else None
+
+
 def new_accumulator() -> dict:
     """Per-batch write counters, returned to the worker for its log line."""
     return {
@@ -69,6 +159,7 @@ def new_accumulator() -> dict:
         "entities_created_for_objects": 0,
         "literal_objects_fell_back": 0,
         "claims_skipped_self": 0,
+        "provisional_binds_queued": 0,
     }
 
 
@@ -90,19 +181,48 @@ def _resolve_top(cursor, name: str, kind: str, embedding: str | None) -> dict | 
     return rows[0] if rows else None
 
 
-def _insert_entity(cursor, name: str, kind: str, embedding: str | None) -> str:
-    cursor.execute(_INSERT_ENTITY_SQL, [kind, name, name, embedding])
-    return dictfetchall(cursor)[0]["id"]
-
-
-def _resolve_or_create_entity(
-    cursor, name: str, kind: str, embedding: str | None, acc: dict
+def _bind_entity(
+    cursor,
+    experience_id: str,
+    name: str,
+    kind: str,
+    embedding: str | None,
+    acc: dict,
+    bindings: dict | None,
 ) -> str:
-    top = _resolve_top(cursor, name, kind, embedding)
-    if top and top["entity_id"] is not None and top["trgm_score"] >= MATCH_THRESHOLD:
-        return top["entity_id"]
-    acc["entities_created_for_objects"] += 1
-    return _insert_entity(cursor, name, kind, embedding)
+    """Bind ``name`` to an entity: the capture's binding, else shared resolution.
+
+    Unbound surfaces go through the SAME resolver the capture path uses (#73) —
+    previously this path ran its own private match-or-create, which meant a
+    borderline guess minted a duplicate with no merge candidate and no queue entry
+    to catch it. A borderline guess now binds to the best candidate and opens a
+    disambiguation marked claim-sourced, so rejecting it repoints the claims this
+    pass wrote rather than a mention that does not exist.
+    """
+    bound = lookup_binding(bindings, name, kind) if bindings else None
+    if bound is not None:
+        return bound
+
+    outcome = resolve_or_create_entity(
+        cursor, experience_id, embedding, surface=name, field=_CLAIM_FIELD, kind=kind
+    )
+    if outcome["action"] == "created":
+        acc["entities_created_for_objects"] += 1
+    if outcome.get("provisional"):
+        open_provisional_binding_on_cursor(
+            cursor,
+            experience_id=experience_id,
+            surface=name,
+            field=_CLAIM_FIELD,
+            entity_kind=outcome["kind"],
+            candidate_entity_id=outcome["candidate_entity_id"],
+            candidate_name=outcome["candidate_name"],
+            trgm_score=outcome["trgm_score"],
+            verification_score=outcome["verification_score"],
+            source=SOURCE_CLAIM,
+        )
+        acc["provisional_binds_queued"] += 1
+    return outcome["entity_id"]
 
 
 def write_claim_for_experience(
@@ -112,12 +232,16 @@ def write_claim_for_experience(
     claim: dict,
     extracted_by: str,
     acc: dict,
+    bindings: dict | None = None,
 ) -> None:
     """Resolve subject/object entities and insert one claim + its claim_source.
 
     ``claim`` is the snake_case dict that extraction/claims.py:parse_claims emits.
     ``embedding`` is the experience embedding as a pgvector text literal (used as
-    resolver context). The caller owns the surrounding transaction.
+    resolver context). ``bindings`` is the capture-time binding index from
+    load_experience_bindings: a surface the capture already tied to an entity binds
+    to it directly, since re-resolving it is what forked entities in #73. The caller
+    owns the surrounding transaction.
 
     A claim whose subject OR object is a bare first-person reference to the owner
     ("I met Jim", "Jim knows me") is DROPPED rather than written: there is no owner
@@ -130,23 +254,46 @@ def write_claim_for_experience(
         acc["claims_skipped_self"] += 1
         return
 
-    subject_id = _resolve_or_create_entity(
-        cursor, claim["subject"], claim["subject_kind"], embedding, acc
+    subject_id = _bind_entity(
+        cursor,
+        experience_id,
+        claim["subject"],
+        claim["subject_kind"],
+        embedding,
+        acc,
+        bindings,
     )
 
-    top = _resolve_top(cursor, claim["object"], claim["object_kind"], embedding)
     object_entity_id: str | None = None
     object_literal: str | None = None
-    if _object_should_be_literal(claim, top):
-        object_literal = claim["object"]
-        acc["literal_objects_fell_back"] += 1
-    elif top and top["entity_id"] is not None and top["trgm_score"] >= MATCH_THRESHOLD:
-        object_entity_id = top["entity_id"]
+    bound_object = (
+        lookup_binding(bindings, claim["object"], claim["object_kind"])
+        if bindings
+        else None
+    )
+    if bound_object is not None:
+        # A bound object never degrades to a literal: the capture already decided
+        # this surface names an entity.
+        object_entity_id = bound_object
+    elif claim["object_kind"] == "concept":
+        # Concept objects stay resolve-or-literal: routing them through the shared
+        # resolver would mint an entity for every free-form quote it can't match.
+        top = _resolve_top(cursor, claim["object"], claim["object_kind"], embedding)
+        if _object_should_be_literal(claim, top):
+            object_literal = claim["object"]
+            acc["literal_objects_fell_back"] += 1
+        else:
+            object_entity_id = top["entity_id"]
     else:
-        object_entity_id = _insert_entity(
-            cursor, claim["object"], claim["object_kind"], embedding
+        object_entity_id = _bind_entity(
+            cursor,
+            experience_id,
+            claim["object"],
+            claim["object_kind"],
+            embedding,
+            acc,
+            bindings,
         )
-        acc["entities_created_for_objects"] += 1
 
     cursor.execute(
         _INSERT_CLAIM_SQL,
@@ -182,11 +329,12 @@ def write_claims_for_experience(
     claims: list[dict],
     extracted_by: str,
     acc: dict | None = None,
+    bindings: dict | None = None,
 ) -> dict:
     """Write every claim for one experience; return the accumulator."""
     a = acc if acc is not None else new_accumulator()
     for claim in claims:
         write_claim_for_experience(
-            cursor, experience_id, embedding, claim, extracted_by, a
+            cursor, experience_id, embedding, claim, extracted_by, a, bindings
         )
     return a
