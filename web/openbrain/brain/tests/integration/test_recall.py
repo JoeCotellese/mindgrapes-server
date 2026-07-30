@@ -158,8 +158,18 @@ def test_who_was_at_by_date():
 
 
 def test_relationships_to_bounds_max_hops():
-    with pytest.raises(ValueError, match="max_hops must be between 1 and 6"):
+    with pytest.raises(ValueError, match="max_hops must be between 1 and 3"):
         relationships_to(_new_id(), max_hops=0)
+
+
+def test_relationships_to_rejects_depth_past_the_ceiling():
+    # Measured on a production-shaped copy (5.7k entities, 9.7k claims): each hop
+    # past 3 costs ~8x more and adds almost nothing — h3 685ms/1229 nodes,
+    # h4 6.4s/1346, h5 47s/1389, h6 153s. The walk expands per path, not per node,
+    # so depth explodes while reachability plateaus. Ceiling is 3 until that is
+    # fixed properly.
+    with pytest.raises(ValueError, match="max_hops must be between 1 and 3"):
+        relationships_to(_new_id(), max_hops=4)
 
 
 def test_relationships_to_reaches_one_hop_neighbor():
