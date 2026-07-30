@@ -230,3 +230,69 @@ def test_relationships_to_floor_omitted_drops_nothing():
 def test_relationships_to_rejects_out_of_range_min_confidence():
     with pytest.raises(ValueError, match="min_confidence must be between 0 and 1"):
         relationships_to(_new_id(), min_confidence=1.5)
+
+
+def _merge_entity(loser_id, winner_id):
+    """Soft-merge without the service: the contract under test is that traversal
+    follows merged_into, not that merge_entities sets it."""
+    with connection.cursor() as cur:
+        cur.execute(
+            "update brain.entities set merged_into = %s::uuid where id = %s::uuid",
+            [winner_id, loser_id],
+        )
+
+
+def test_relationships_to_reaches_outbound_edge_of_a_merged_loser():
+    # A soft merge never rewrites claims, so the loser's edges stay stored against
+    # the loser id. Walking the survivor must still reach them (#81).
+    survivor = _seed_entity(canonical_name="Merge Survivor Out")
+    loser = _seed_entity(canonical_name="Merge Loser Out")
+    own = _seed_entity(canonical_name="Survivor Neighbor Out")
+    inherited = _seed_entity(canonical_name="Loser Neighbor Out")
+    _seed_claim(survivor, own)
+    _seed_claim(loser, inherited)
+    _merge_entity(loser, survivor)
+
+    reached = {
+        r["entity_id"]
+        for r in relationships_to(survivor, max_hops=1, min_confidence=0)["related"]
+    }
+    assert own in reached
+    assert inherited in reached
+    # The tombstone itself is normalized away, never returned as a node.
+    assert loser not in reached
+
+
+def test_relationships_to_reaches_inbound_edge_of_a_merged_loser():
+    # Same defect on the object side: a claim pointing AT the loser.
+    survivor = _seed_entity(canonical_name="Merge Survivor In")
+    loser = _seed_entity(canonical_name="Merge Loser In")
+    pointer = _seed_entity(canonical_name="Points At Loser")
+    _seed_claim(pointer, loser)
+    _merge_entity(loser, survivor)
+
+    reached = {
+        r["entity_id"]
+        for r in relationships_to(survivor, max_hops=1, min_confidence=0)["related"]
+    }
+    assert pointer in reached
+
+
+def test_relationships_to_seeding_a_tombstone_matches_its_survivor():
+    # Seeding the loser id resolves to the survivor, so both ids see one graph.
+    survivor = _seed_entity(canonical_name="Merge Survivor Seed")
+    loser = _seed_entity(canonical_name="Merge Loser Seed")
+    inherited = _seed_entity(canonical_name="Loser Neighbor Seed")
+    _seed_claim(loser, inherited)
+    _merge_entity(loser, survivor)
+
+    from_survivor = {
+        r["entity_id"]
+        for r in relationships_to(survivor, max_hops=1, min_confidence=0)["related"]
+    }
+    from_loser = {
+        r["entity_id"]
+        for r in relationships_to(loser, max_hops=1, min_confidence=0)["related"]
+    }
+    assert inherited in from_survivor
+    assert from_survivor == from_loser
