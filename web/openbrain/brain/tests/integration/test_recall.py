@@ -158,8 +158,18 @@ def test_who_was_at_by_date():
 
 
 def test_relationships_to_bounds_max_hops():
-    with pytest.raises(ValueError, match="max_hops must be between 1 and 6"):
+    with pytest.raises(ValueError, match="max_hops must be between 1 and 3"):
         relationships_to(_new_id(), max_hops=0)
+
+
+def test_relationships_to_rejects_depth_past_the_ceiling():
+    # Measured on a production-shaped copy (5.7k entities, 9.7k claims): each hop
+    # past 3 costs ~8x more and adds almost nothing — h3 685ms/1229 nodes,
+    # h4 6.4s/1346, h5 47s/1389, h6 153s. The walk expands per path, not per node,
+    # so depth explodes while reachability plateaus. Ceiling is 3 until that is
+    # fixed properly.
+    with pytest.raises(ValueError, match="max_hops must be between 1 and 3"):
+        relationships_to(_new_id(), max_hops=4)
 
 
 def test_relationships_to_reaches_one_hop_neighbor():
@@ -230,3 +240,196 @@ def test_relationships_to_floor_omitted_drops_nothing():
 def test_relationships_to_rejects_out_of_range_min_confidence():
     with pytest.raises(ValueError, match="min_confidence must be between 0 and 1"):
         relationships_to(_new_id(), min_confidence=1.5)
+
+
+def _merge_entity(loser_id, winner_id):
+    """Soft-merge without the service: the contract under test is that traversal
+    follows merged_into, not that merge_entities sets it."""
+    with connection.cursor() as cur:
+        cur.execute(
+            "update brain.entities set merged_into = %s::uuid where id = %s::uuid",
+            [winner_id, loser_id],
+        )
+
+
+def test_relationships_to_reaches_outbound_edge_of_a_merged_loser():
+    # A soft merge never rewrites claims, so the loser's edges stay stored against
+    # the loser id. Walking the survivor must still reach them (#81).
+    survivor = _seed_entity(canonical_name="Merge Survivor Out")
+    loser = _seed_entity(canonical_name="Merge Loser Out")
+    own = _seed_entity(canonical_name="Survivor Neighbor Out")
+    inherited = _seed_entity(canonical_name="Loser Neighbor Out")
+    _seed_claim(survivor, own)
+    _seed_claim(loser, inherited)
+    _merge_entity(loser, survivor)
+
+    reached = {
+        r["entity_id"]
+        for r in relationships_to(survivor, max_hops=1, min_confidence=0)["related"]
+    }
+    assert own in reached
+    assert inherited in reached
+    # The tombstone itself is normalized away, never returned as a node.
+    assert loser not in reached
+
+
+def test_relationships_to_reaches_inbound_edge_of_a_merged_loser():
+    # Same defect on the object side: a claim pointing AT the loser.
+    survivor = _seed_entity(canonical_name="Merge Survivor In")
+    loser = _seed_entity(canonical_name="Merge Loser In")
+    pointer = _seed_entity(canonical_name="Points At Loser")
+    _seed_claim(pointer, loser)
+    _merge_entity(loser, survivor)
+
+    reached = {
+        r["entity_id"]
+        for r in relationships_to(survivor, max_hops=1, min_confidence=0)["related"]
+    }
+    assert pointer in reached
+
+
+def test_relationships_to_seeding_a_tombstone_matches_its_survivor():
+    # Seeding the loser id resolves to the survivor, so both ids see one graph.
+    # Both sides must carry the inherited edge — asserting only set equality would
+    # pass on the pre-fix function, where both sides were equally empty.
+    survivor = _seed_entity(canonical_name="Merge Survivor Seed")
+    loser = _seed_entity(canonical_name="Merge Loser Seed")
+    inherited = _seed_entity(canonical_name="Loser Neighbor Seed")
+    own = _seed_entity(canonical_name="Survivor Neighbor Seed")
+    _seed_claim(loser, inherited)
+    _seed_claim(survivor, own)
+    _merge_entity(loser, survivor)
+
+    from_survivor = {
+        r["entity_id"]
+        for r in relationships_to(survivor, max_hops=1, min_confidence=0)["related"]
+    }
+    from_loser = {
+        r["entity_id"]
+        for r in relationships_to(loser, max_hops=1, min_confidence=0)["related"]
+    }
+    assert {inherited, own} <= from_survivor
+    assert {inherited, own} <= from_loser
+    assert from_survivor == from_loser
+
+
+def test_relationships_to_inherited_edge_carries_correct_hops_and_confidence():
+    # An inherited edge is a real 1-hop edge of the survivor, at the claim's own
+    # confidence — not a discounted or extra-hop path.
+    survivor = _seed_entity(canonical_name="Metric Survivor")
+    loser = _seed_entity(canonical_name="Metric Loser")
+    near = _seed_entity(canonical_name="Metric Near")
+    far = _seed_entity(canonical_name="Metric Far")
+    _seed_claim(loser, near, confidence=0.9)
+    _seed_claim(near, far, confidence=0.5)
+    _merge_entity(loser, survivor)
+
+    by_id = {
+        r["entity_id"]: r
+        for r in relationships_to(survivor, max_hops=2, min_confidence=0)["related"]
+    }
+    assert by_id[near]["hops"] == 1
+    assert by_id[near]["confidence"] == pytest.approx(0.9, abs=1e-3)
+    # And the chain continues through the inherited edge, compounding normally.
+    assert by_id[far]["hops"] == 2
+    assert by_id[far]["confidence"] == pytest.approx(0.45, abs=1e-3)
+
+
+def test_relationships_to_floor_prunes_a_shaky_inherited_edge():
+    # The confidence floor applies to inherited edges exactly as to native ones.
+    survivor = _seed_entity(canonical_name="Floor Survivor")
+    loser = _seed_entity(canonical_name="Floor Loser")
+    strong = _seed_entity(canonical_name="Floor Strong")
+    shaky = _seed_entity(canonical_name="Floor Shaky")
+    _seed_claim(loser, strong, confidence=0.9)
+    _seed_claim(loser, shaky, confidence=0.5)
+    _merge_entity(loser, survivor)
+
+    reached = {
+        r["entity_id"]
+        for r in relationships_to(survivor, max_hops=1, min_confidence=0.6)["related"]
+    }
+    assert strong in reached
+    assert shaky not in reached
+
+
+def test_relationships_to_collapses_an_edge_inside_one_merge_group():
+    # Both endpoints merge into the same survivor, so the claim between them
+    # resolves to a self-edge; the visited guard drops it and neither loser is
+    # reported as a neighbour of the group. Documented in init/22, pinned here.
+    survivor = _seed_entity(canonical_name="Selfedge Survivor")
+    left = _seed_entity(canonical_name="Selfedge Left")
+    right = _seed_entity(canonical_name="Selfedge Right")
+    outside = _seed_entity(canonical_name="Selfedge Outside")
+    _seed_claim(left, right)
+    _seed_claim(left, outside)
+    _merge_entity(left, survivor)
+    _merge_entity(right, survivor)
+
+    reached = {
+        r["entity_id"]
+        for r in relationships_to(survivor, max_hops=2, min_confidence=0)["related"]
+    }
+    assert outside in reached
+    assert survivor not in reached
+    assert left not in reached and right not in reached
+
+
+def test_relationships_to_after_a_chained_merge_is_flattened_by_path_compression():
+    # merge_entities path-compresses, so A->B plus merge(B, C) leaves A and B both
+    # pointing at C. Traversal from C must therefore see A's edges too — the case
+    # that stranded four entities on the live brain during #79.
+    from openbrain.brain.services.entities import merge_entities
+
+    c = _seed_entity(canonical_name="Chained Root")
+    b = _seed_entity(canonical_name="Chained Middle")
+    a = _seed_entity(canonical_name="Chained Leaf")
+    a_edge = _seed_entity(canonical_name="Chained Leaf Neighbor")
+    b_edge = _seed_entity(canonical_name="Chained Middle Neighbor")
+    _seed_claim(a, a_edge)
+    _seed_claim(b, b_edge)
+    _merge_entity(a, b)
+
+    merge_entities(b, c)
+
+    reached = {
+        r["entity_id"]
+        for r in relationships_to(c, max_hops=1, min_confidence=0)["related"]
+    }
+    assert b_edge in reached
+    assert a_edge in reached, "the twice-merged node's edges were lost"
+
+
+def test_relationships_to_after_init_23_flattens_a_preexisting_chain():
+    # The other half of the invariant. Path compression only constrains merges made
+    # after it shipped; the live brain carried six chains that predate it, four from
+    # #79's batch. init/22's member lookup is one level deep — it finds the entities
+    # pointing DIRECTLY at the survivor — so before init/23 runs, walking C sees B
+    # but not A, and A's edges stay invisible from every id in the group. Verified
+    # against the unflattened state: b_edge is reachable, a_edge is not. Seeded
+    # directly, because merge_entities refuses to build this state now.
+    from django.db import transaction
+
+    from openbrain.mcp.ledger import default_init_dir
+
+    c = _seed_entity(canonical_name="Preexisting Root")
+    b = _seed_entity(canonical_name="Preexisting Middle")
+    a = _seed_entity(canonical_name="Preexisting Leaf")
+    a_edge = _seed_entity(canonical_name="Preexisting Leaf Neighbor")
+    b_edge = _seed_entity(canonical_name="Preexisting Middle Neighbor")
+    _seed_claim(a, a_edge)
+    _seed_claim(b, b_edge)
+    _merge_entity(a, b)
+    _merge_entity(b, c)
+
+    sql = (default_init_dir() / "23-flatten-merge-chains.sql").read_text()
+    with transaction.atomic(), connection.cursor() as cur:
+        cur.execute(sql)
+
+    reached = {
+        r["entity_id"]
+        for r in relationships_to(c, max_hops=1, min_confidence=0)["related"]
+    }
+    assert a_edge in reached, "the leaf of a pre-existing chain stayed unreachable"
+    assert b_edge in reached
+    assert a not in reached and b not in reached

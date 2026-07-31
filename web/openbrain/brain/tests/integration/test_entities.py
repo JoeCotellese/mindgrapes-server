@@ -12,7 +12,7 @@ Requires the dev stack up (make dev-up); run via make dev-test-integration.
 import uuid
 
 import pytest
-from django.db import connection
+from django.db import ProgrammingError, connection, transaction
 from django.test import override_settings
 
 from openbrain.brain.db import dictfetchall
@@ -33,6 +33,7 @@ from openbrain.brain.services.entities import (
 from openbrain.brain.services.entity_resolver import (
     resolve_or_create_entity,
 )
+from openbrain.mcp.ledger import default_init_dir
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("brain_write_txn")]
 
@@ -149,6 +150,257 @@ def test_merge_appends_aliases_sets_merged_into_and_audits():
         )
         == 1
     )
+
+
+def test_merge_repoints_the_losers_own_losers_so_pointers_stay_flat():
+    # merged_into is a pointer to the *survivor*, one level deep. Merging B into C
+    # while A already points at B must repoint A too, or A->B->C is a chain that
+    # every merge-aware read path then has to walk (#81). Six of these existed on
+    # the live brain, four minted by #79's batch.
+    c = _seed_entity(canonical_name="Chain Root")
+    b = _seed_entity(canonical_name="Chain Middle")
+    a = _seed_entity(canonical_name="Chain Leaf", merged_into=b)
+
+    merge_entities(b, c)
+
+    assert (
+        _scalar("select merged_into::text from brain.entities where id=%s::uuid", [b])
+        == c
+    )
+    assert (
+        _scalar("select merged_into::text from brain.entities where id=%s::uuid", [a])
+        == c
+    ), "A was left pointing at B, which is now a tombstone"
+
+
+def test_merge_repointing_is_audited_per_repointed_entity():
+    # The repoint is a mutation of A, so it owes its own correction_events row —
+    # the house rule is append-mostly with an audit trail, not silent fixups.
+    c = _seed_entity(canonical_name="Audit Root")
+    b = _seed_entity(canonical_name="Audit Middle")
+    a = _seed_entity(canonical_name="Audit Leaf", merged_into=b)
+
+    merge_entities(b, c)
+
+    assert (
+        _scalar(
+            "select count(*) from brain.correction_events "
+            "where target_kind='entity' and target_id=%s::uuid",
+            [a],
+        )
+        == 1
+    )
+
+
+def test_merge_repoints_every_loser_not_just_one():
+    c = _seed_entity(canonical_name="Fanout Root")
+    b = _seed_entity(canonical_name="Fanout Middle")
+    leaves = [
+        _seed_entity(canonical_name=f"Fanout Leaf {i}", merged_into=b) for i in range(3)
+    ]
+
+    merge_entities(b, c)
+
+    for leaf in leaves:
+        assert (
+            _scalar(
+                "select merged_into::text from brain.entities where id=%s::uuid", [leaf]
+            )
+            == c
+        )
+
+
+def test_unmerge_restores_entities_that_path_compression_repointed():
+    # A was judged same-as-B. Merging B into C repoints A to C. Unmerging B says
+    # "B is not C" — so A, whose only evidence ties it to B, must follow B back.
+    # Without this, path compression makes a merge irreversible for A.
+    c = _seed_entity(canonical_name="Undo Root")
+    b = _seed_entity(canonical_name="Undo Middle")
+    a = _seed_entity(canonical_name="Undo Leaf", merged_into=b)
+
+    merge_entities(b, c)
+    unmerge_entity(b)
+
+    assert (
+        _scalar("select merged_into::text from brain.entities where id=%s::uuid", [b])
+        is None
+    )
+    assert (
+        _scalar("select merged_into::text from brain.entities where id=%s::uuid", [a])
+        == b
+    ), "A was stranded on C after its merge into B was undone"
+
+
+def test_unmerge_leaves_unrelated_losers_of_the_winner_alone():
+    # Only the entities this particular merge repointed come back. A loser that
+    # pointed at the winner independently must not be dragged along.
+    c = _seed_entity(canonical_name="Scope Root")
+    b = _seed_entity(canonical_name="Scope Middle")
+    a = _seed_entity(canonical_name="Scope Leaf", merged_into=b)
+    independent = _seed_entity(canonical_name="Scope Independent", merged_into=c)
+
+    merge_entities(b, c)
+    unmerge_entity(b)
+
+    assert (
+        _scalar("select merged_into::text from brain.entities where id=%s::uuid", [a])
+        == b
+    )
+    assert (
+        _scalar(
+            "select merged_into::text from brain.entities where id=%s::uuid",
+            [independent],
+        )
+        == c
+    )
+
+
+# --- init/23 chain flatten ----------------------------------------------------
+
+
+def _apply_flatten_migration():
+    """Run init/23 exactly as `brain_ledger migrate` does — the file is the contract.
+
+    Nested atomic so a raising migration rolls back to a savepoint and leaves the
+    outer brain_write_txn usable.
+    """
+    sql = (default_init_dir() / "23-flatten-merge-chains.sql").read_text()
+    with transaction.atomic(), connection.cursor() as cur:
+        cur.execute(sql)
+
+
+def _compression_audits(target_id):
+    with connection.cursor() as cur:
+        cur.execute(
+            "select before->>'merged_into' as before_ptr, "
+            "after->>'merged_into' as after_ptr, "
+            "after->>'compressed_via' as compressed_via, created_by "
+            "from brain.correction_events "
+            "where target_kind='entity' and target_id=%s::uuid "
+            "and after->>'compressed_via' is not null",
+            [target_id],
+        )
+        return dictfetchall(cur)
+
+
+def test_flatten_repoints_a_chained_pointer_at_the_terminal_survivor():
+    # The state init/23 exists for: chains that predate the service-layer guard.
+    # Seeded directly, because merge_entities now refuses to create one.
+    c = _seed_entity(canonical_name="Flatten Root")
+    b = _seed_entity(canonical_name="Flatten Middle", merged_into=c)
+    a = _seed_entity(canonical_name="Flatten Leaf", merged_into=b)
+
+    _apply_flatten_migration()
+
+    assert (
+        _scalar("select merged_into::text from brain.entities where id=%s::uuid", [a])
+        == c
+    ), "A still points at B, a tombstone — init/22's member lookup cannot see it"
+    assert (
+        _scalar("select merged_into::text from brain.entities where id=%s::uuid", [b])
+        == c
+    )
+
+
+def test_flatten_resolves_a_long_chain_in_one_pass():
+    # Four deep. A single non-recursive repoint would leave A pointing at B.
+    d = _seed_entity(canonical_name="Long Root")
+    c = _seed_entity(canonical_name="Long Third", merged_into=d)
+    b = _seed_entity(canonical_name="Long Second", merged_into=c)
+    a = _seed_entity(canonical_name="Long First", merged_into=b)
+
+    _apply_flatten_migration()
+
+    for chained in (a, b, c):
+        assert (
+            _scalar(
+                "select merged_into::text from brain.entities where id=%s::uuid",
+                [chained],
+            )
+            == d
+        )
+
+
+def test_flatten_audits_each_repoint_with_the_path_compression_shape():
+    # Same before/after shape merge_entities_on_cursor writes, so unmerge_entity's
+    # compressed_via reversal treats a migration repoint like a service repoint.
+    c = _seed_entity(canonical_name="Audit Flatten Root")
+    b = _seed_entity(canonical_name="Audit Flatten Middle", merged_into=c)
+    a = _seed_entity(canonical_name="Audit Flatten Leaf", merged_into=b)
+
+    _apply_flatten_migration()
+
+    audits = _compression_audits(a)
+    assert len(audits) == 1
+    assert audits[0]["before_ptr"] == b
+    assert audits[0]["after_ptr"] == c
+    assert audits[0]["compressed_via"] == b
+    assert audits[0]["created_by"] == "migration:23-flatten-merge-chains"
+
+
+def test_flatten_leaves_an_already_flat_pointer_alone():
+    # A pointer that already names a live survivor is not a chain: no update, and
+    # no audit row claiming a change that never happened.
+    winner = _seed_entity(canonical_name="Flat Winner")
+    loser = _seed_entity(canonical_name="Flat Loser", merged_into=winner)
+
+    _apply_flatten_migration()
+
+    assert (
+        _scalar(
+            "select merged_into::text from brain.entities where id=%s::uuid", [loser]
+        )
+        == winner
+    )
+    assert _compression_audits(loser) == []
+
+
+def test_flatten_is_idempotent():
+    # migrate applies once, but a re-run (replayed volume, manual re-apply) must
+    # not write a second audit row for a pointer it already moved.
+    c = _seed_entity(canonical_name="Idem Root")
+    b = _seed_entity(canonical_name="Idem Middle", merged_into=c)
+    a = _seed_entity(canonical_name="Idem Leaf", merged_into=b)
+
+    _apply_flatten_migration()
+    _apply_flatten_migration()
+
+    assert (
+        _scalar("select merged_into::text from brain.entities where id=%s::uuid", [a])
+        == c
+    )
+    assert len(_compression_audits(a)) == 1
+
+
+def test_flatten_refuses_a_cyclic_pointer_set():
+    # A cycle has no terminal survivor. The verification block must abort the
+    # migration rather than leave init/22 walking data it cannot resolve.
+    first = _seed_entity(canonical_name="Cycle First")
+    second = _seed_entity(canonical_name="Cycle Second", merged_into=first)
+    with connection.cursor() as cur:
+        cur.execute(
+            "update brain.entities set merged_into = %s::uuid where id = %s::uuid",
+            [second, first],
+        )
+
+    with pytest.raises(ProgrammingError, match="still reference a tombstone"):
+        _apply_flatten_migration()
+
+
+def test_unmerge_restores_a_pointer_the_flatten_migration_moved():
+    # The interop init/23 claims: unmerging the mid-chain tombstone brings back
+    # the entities the migration repointed past it, same as for a service merge.
+    c = _seed_entity(canonical_name="Flatten Undo Root")
+    b = _seed_entity(canonical_name="Flatten Undo Middle", merged_into=c)
+    a = _seed_entity(canonical_name="Flatten Undo Leaf", merged_into=b)
+
+    _apply_flatten_migration()
+    unmerge_entity(b)
+
+    assert (
+        _scalar("select merged_into::text from brain.entities where id=%s::uuid", [a])
+        == b
+    ), "A stayed on C after B's merge was undone"
 
 
 def test_merge_already_merged_loser_raises():
@@ -462,6 +714,68 @@ def test_unmerge_clears_pointer_and_reopens_candidate():
     )
     assert (
         _scalar("select status from brain.merge_candidates where id=%s::uuid", [mc])
+        == "pending"
+    )
+
+
+def test_unmerge_reopens_the_pair_that_was_actually_decided_not_the_compressed_one():
+    # A was judged same-as-B, so the disputed pair on file is (A, B). Merging B
+    # into C path-compresses A onto C, but nobody ever weighed A against C and no
+    # (A, C) candidate row exists. Keying the reopen on A's *current* pointer
+    # would update nothing and strand the real (A, B) row on 'merged' forever,
+    # invisible to review_queue (#81).
+    c = _seed_entity(canonical_name="Reopen Root")
+    b = _seed_entity(canonical_name="Reopen Middle")
+    a = _seed_entity(canonical_name="Reopen Leaf")
+    decided = _seed_merge_candidate(a, b, status="pending")
+
+    merge_entities(a, b)
+    merge_entities(b, c)
+    unmerge_entity(a)
+
+    assert (
+        _scalar(
+            "select status from brain.merge_candidates where id=%s::uuid", [decided]
+        )
+        == "pending"
+    ), "the pair that was actually judged never came back to review_queue"
+
+
+def test_unmerge_still_reopens_an_uncompressed_pair():
+    # The ordinary case keeps working: no compression, so the decided pair and the
+    # current pointer are the same entity.
+    winner = _seed_entity(canonical_name="Plain Reopen Winner")
+    loser = _seed_entity(canonical_name="Plain Reopen Loser")
+    mc = _seed_merge_candidate(loser, winner, status="pending")
+
+    merge_entities(loser, winner)
+    unmerge_entity(loser)
+
+    assert (
+        _scalar("select status from brain.merge_candidates where id=%s::uuid", [mc])
+        == "pending"
+    )
+
+
+def test_unmerge_reopens_the_decided_pair_after_two_compressions():
+    # A -> B, then merge(B, C) compresses A onto C, then merge(C, D) compresses A
+    # again onto D. The decided pair is still (A, B) — the most recent compression
+    # names C, which is equally wrong.
+    d = _seed_entity(canonical_name="Twice Root")
+    c = _seed_entity(canonical_name="Twice Third")
+    b = _seed_entity(canonical_name="Twice Second")
+    a = _seed_entity(canonical_name="Twice First")
+    decided = _seed_merge_candidate(a, b, status="pending")
+
+    merge_entities(a, b)
+    merge_entities(b, c)
+    merge_entities(c, d)
+    unmerge_entity(a)
+
+    assert (
+        _scalar(
+            "select status from brain.merge_candidates where id=%s::uuid", [decided]
+        )
         == "pending"
     )
 

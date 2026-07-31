@@ -139,7 +139,9 @@ def register_entity_tools(mcp) -> None:
                 "server-side."
             ),
         ] = None,
-        kind: Literal["person", "org", "event", "place", "concept", "animal"] = "person",
+        kind: Literal[
+            "person", "org", "event", "place", "concept", "animal"
+        ] = "person",
         top_k: Annotated[int, Field(ge=1, le=20)] = 5,
     ) -> dict:
         return serialize(
@@ -203,7 +205,7 @@ def register_entity_tools(mcp) -> None:
     @_guarded
     def relationships_to(
         entity_id: str,
-        max_hops: Annotated[int, Field(ge=1, le=6)] = 2,
+        max_hops: Annotated[int, Field(ge=1, le=3)] = 2,
         min_confidence: Annotated[float, Field(ge=0, le=1)] = 0.6,
     ) -> dict:
         return serialize(

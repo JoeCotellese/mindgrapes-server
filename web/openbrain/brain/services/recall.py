@@ -137,8 +137,12 @@ def relationships_to(
     paths whose running confidence drops below min_confidence are pruned
     (min_confidence 0 = no floor, the back-compatible default).
     """
-    if max_hops < 1 or max_hops > 6:
-        raise ValueError("relationships_to: max_hops must be between 1 and 6")
+    # Ceiling is 3, not 6: the walk expands per path rather than per node, so cost
+    # grows ~8x per hop while reachability plateaus. Measured on a production-shaped
+    # copy — h3 685ms/1229 nodes, h4 6.4s/1346, h5 47s/1389, h6 153s. Past 3 an agent
+    # can hang its own connection for minutes to learn almost nothing new.
+    if max_hops < 1 or max_hops > 3:
+        raise ValueError("relationships_to: max_hops must be between 1 and 3")
     if not 0 <= min_confidence <= 1:
         raise ValueError("relationships_to: min_confidence must be between 0 and 1")
 

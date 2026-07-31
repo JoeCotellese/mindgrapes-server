@@ -69,7 +69,8 @@ def merge_entities_on_cursor(
     created_by: str = "mcp:merge_entities",
 ) -> dict:
     """Soft-merge loser into winner on the caller's cursor: append aliases, set
-    merged_into, resolve any pending candidate, audit.
+    merged_into, flatten any pointers left behind the loser, resolve any pending
+    candidate, audit.
 
     The cursor-level core of the merge path. merge_entities wraps it in its own
     transaction; the second-stage auto-merge (entity_resolver) calls it inside the
@@ -130,6 +131,37 @@ def merge_entities_on_cursor(
         "update brain.entities set merged_into = %s::uuid where id = %s::uuid",
         [winner["id"], loser["id"]],
     )
+
+    # Path compression: anything already pointing at the loser now points past it,
+    # straight at the winner. merged_into means "the survivor", so it must stay one
+    # level deep — the guards above refuse a merged loser or a merged winner, but
+    # nothing stopped an *existing* loser from being orphaned behind its winner.
+    # Left alone, A->B plus merge(B, C) yields A->B->C, and every merge-aware read
+    # has to walk the chain instead of dereferencing once (#81).
+    cursor.execute(
+        "select id::text, merged_into::text from brain.entities "
+        "where merged_into = %s::uuid for update",
+        [loser["id"]],
+    )
+    orphaned = dictfetchall(cursor)
+    if orphaned:
+        cursor.execute(
+            "update brain.entities set merged_into = %s::uuid where merged_into = %s::uuid",
+            [winner["id"], loser["id"]],
+        )
+        for row in orphaned:
+            record_correction(
+                cursor,
+                target_kind="entity",
+                target_id=row["id"],
+                before={"merged_into": row["merged_into"]},
+                # compressed_via names the merge that moved this pointer, so
+                # unmerge_entity can find and reverse exactly these repoints
+                # instead of guessing from the winner's current loser set.
+                after={"merged_into": winner["id"], "compressed_via": loser["id"]},
+                reason=f"path compression: {loser['id']} merged into {winner['id']}",
+                created_by=created_by,
+            )
 
     # Mark any pending merge_candidates row covering this pair as resolved.
     cursor.execute(
@@ -844,6 +876,67 @@ def unmerge_entity(
             "update brain.entities set merged_into = null where id = %s::uuid",
             [e["id"]],
         )
+
+        # Undo the path compression this merge performed: anything merge_entities
+        # repointed past e now points back at e. Scoped by compressed_via so a
+        # loser that pointed at the winner on its own is left alone, and guarded on
+        # the current pointer so a later merge that moved it again wins.
+        cursor.execute(
+            """
+            update brain.entities t
+               set merged_into = %s::uuid
+              from brain.correction_events ce
+             where ce.target_kind = 'entity'
+               and ce.target_id = t.id
+               and ce.after ->> 'compressed_via' = %s
+               and t.merged_into = (ce.after ->> 'merged_into')::uuid
+            returning t.id::text as id
+            """,
+            [e["id"], e["id"]],
+        )
+        restored = [row["id"] for row in dictfetchall(cursor)]
+        for target_id in restored:
+            record_correction(
+                cursor,
+                target_kind="entity",
+                target_id=target_id,
+                before={"merged_into": e["merged_into"]},
+                after={"merged_into": e["id"]},
+                reason=f"path compression undone: {e['id']} unmerged",
+                created_by=created_by,
+            )
+
+        # The pair to reopen is the one that was actually judged, which is not
+        # always the current pointer. Path compression repoints A past B onto B's
+        # winner, so A ends up naming an entity nobody ever weighed it against and
+        # for which no candidate row exists — keying the reopen on merged_into
+        # would match nothing and strand the real (A, B) row on 'merged' forever
+        # (#81). Walk the compression events on this entity backwards instead:
+        # each names the pointer it wrote and the tombstone it moved past, so
+        # following merged_into -> compressed_via lands on the decided partner.
+        # depth caps a lineage made cyclic by repeated merge/unmerge; an entity
+        # that was never compressed has no rows here and stays at depth 0, which
+        # is the current pointer.
+        cursor.execute(
+            """
+            with recursive lineage(partner, depth) as (
+                select %s::text, 0
+              union all
+                select ce.after ->> 'compressed_via', l.depth + 1
+                  from lineage l
+                  join brain.correction_events ce
+                    on ce.target_kind = 'entity'
+                   and ce.target_id = %s::uuid
+                   and ce.after ->> 'compressed_via' is not null
+                   and ce.after ->> 'merged_into' = l.partner
+                 where l.depth < 32
+            )
+            select partner from lineage order by depth desc limit 1
+            """,
+            [e["merged_into"], e["id"]],
+        )
+        decided_with = dictfetchall(cursor)[0]["partner"]
+
         # Reopen the merge_candidates row merge_entities resolved so the pair
         # resurfaces in review_queue rather than carrying a stale 'merged' verdict.
         cursor.execute(
@@ -854,7 +947,7 @@ def unmerge_entity(
                and entity_a = least(%s::uuid, %s::uuid)
                and entity_b = greatest(%s::uuid, %s::uuid)
             """,
-            [e["id"], e["merged_into"], e["id"], e["merged_into"]],
+            [e["id"], decided_with, e["id"], decided_with],
         )
         correction_id = record_correction(
             cursor,

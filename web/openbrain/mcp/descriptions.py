@@ -104,7 +104,7 @@ On empty result: N/A (this is a write).
 Cost: low.
 Idempotent: no (subsequent calls error if the loser is already merged).
 Reversible: yes via the recorded correction_events row, which carries the prior loser/winner state.
-Side effects: writes brain.entities (loser.merged_into, winner.aliases) and brain.correction_events."""
+Side effects: writes brain.entities (loser.merged_into, winner.aliases) and brain.correction_events. If other entities were already merged into the loser, their merged_into is repointed at the winner too, so a merge pointer is always one hop from a live entity; each repointed entity gets its own correction_events row."""
 
 RENAME_ENTITY = """Change an entity's canonical_name. The prior name is preserved as an alias so historical references still resolve.
 
@@ -148,7 +148,7 @@ On empty result: N/A (this is a write). Errors if the entity is not merged.
 Cost: low.
 Idempotent: no — errors if merged_into is already null.
 Reversible: yes — re-run merge_entities, or consult the recorded correction_events row.
-Side effects: writes brain.entities.merged_into and brain.correction_events. Aliases that merge appended to the winner are intentionally left in place."""
+Side effects: writes brain.entities.merged_into and brain.correction_events. Entities that this entity's merge repointed at the winner are handed back to it, each with its own correction_events row. Reopens the merge_candidates row for the pair that was actually judged, which is not always the current merged_into. Aliases that merge appended to the winner are intentionally left in place."""
 
 UPDATE_EXPERIENCE = """Edit non-content fields on an experience: occurred_at, metadata, source_ref, visibility. content is immutable by spec — captures stay verbatim and corrections flow through claims.
 
@@ -189,9 +189,9 @@ RELATIONSHIPS_TO = """Recursive walk over non-retracted entity-to-entity claims.
 
 Use when: the caller wants graph reachability ("everyone I know through X", "orgs reachable from this person", "two-hop neighborhood of this entity"), optionally trusting only well-supported chains.
 Don't use when: the caller only needs entities mentioned in one experience or on one date — that's who_was_at and is far cheaper. Don't use for free-text similarity either; that's search_thoughts.
-On empty result: lower min_confidence (the default 0.6 floor may have pruned every multi-hop chain), increase max_hops, or call resolve_entity to confirm the starting entity_id is correct (a typo in the seed will make the graph look empty).
+On empty result: lower min_confidence (the default 0.6 floor may have pruned every multi-hop chain), increase max_hops (capped at 3 — cost grows ~8x per hop while reachability plateaus, so deeper walks buy almost nothing), or call resolve_entity to confirm the starting entity_id is correct (a typo in the seed will make the graph look empty).
 
-Cost: medium (recursive CTE, bounded by max_hops; cost grows roughly with the local degree of the seed).
+Cost: medium (recursive CTE, bounded by max_hops; cost grows roughly with the local degree of the seed — counting the edges of every entity soft-merged into it, since those are walked too).
 Idempotent: yes.
 Reversible: N/A (read-only).
 Side effects: none."""
