@@ -718,6 +718,68 @@ def test_unmerge_clears_pointer_and_reopens_candidate():
     )
 
 
+def test_unmerge_reopens_the_pair_that_was_actually_decided_not_the_compressed_one():
+    # A was judged same-as-B, so the disputed pair on file is (A, B). Merging B
+    # into C path-compresses A onto C, but nobody ever weighed A against C and no
+    # (A, C) candidate row exists. Keying the reopen on A's *current* pointer
+    # would update nothing and strand the real (A, B) row on 'merged' forever,
+    # invisible to review_queue (#81).
+    c = _seed_entity(canonical_name="Reopen Root")
+    b = _seed_entity(canonical_name="Reopen Middle")
+    a = _seed_entity(canonical_name="Reopen Leaf")
+    decided = _seed_merge_candidate(a, b, status="pending")
+
+    merge_entities(a, b)
+    merge_entities(b, c)
+    unmerge_entity(a)
+
+    assert (
+        _scalar(
+            "select status from brain.merge_candidates where id=%s::uuid", [decided]
+        )
+        == "pending"
+    ), "the pair that was actually judged never came back to review_queue"
+
+
+def test_unmerge_still_reopens_an_uncompressed_pair():
+    # The ordinary case keeps working: no compression, so the decided pair and the
+    # current pointer are the same entity.
+    winner = _seed_entity(canonical_name="Plain Reopen Winner")
+    loser = _seed_entity(canonical_name="Plain Reopen Loser")
+    mc = _seed_merge_candidate(loser, winner, status="pending")
+
+    merge_entities(loser, winner)
+    unmerge_entity(loser)
+
+    assert (
+        _scalar("select status from brain.merge_candidates where id=%s::uuid", [mc])
+        == "pending"
+    )
+
+
+def test_unmerge_reopens_the_decided_pair_after_two_compressions():
+    # A -> B, then merge(B, C) compresses A onto C, then merge(C, D) compresses A
+    # again onto D. The decided pair is still (A, B) — the most recent compression
+    # names C, which is equally wrong.
+    d = _seed_entity(canonical_name="Twice Root")
+    c = _seed_entity(canonical_name="Twice Third")
+    b = _seed_entity(canonical_name="Twice Second")
+    a = _seed_entity(canonical_name="Twice First")
+    decided = _seed_merge_candidate(a, b, status="pending")
+
+    merge_entities(a, b)
+    merge_entities(b, c)
+    merge_entities(c, d)
+    unmerge_entity(a)
+
+    assert (
+        _scalar(
+            "select status from brain.merge_candidates where id=%s::uuid", [decided]
+        )
+        == "pending"
+    )
+
+
 def test_unmerge_not_merged_raises():
     e = _seed_entity()
     with pytest.raises(ValueError, match="is not merged"):

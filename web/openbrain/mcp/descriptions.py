@@ -104,7 +104,7 @@ On empty result: N/A (this is a write).
 Cost: low.
 Idempotent: no (subsequent calls error if the loser is already merged).
 Reversible: yes via the recorded correction_events row, which carries the prior loser/winner state.
-Side effects: writes brain.entities (loser.merged_into, winner.aliases) and brain.correction_events."""
+Side effects: writes brain.entities (loser.merged_into, winner.aliases) and brain.correction_events. If other entities were already merged into the loser, their merged_into is repointed at the winner too, so a merge pointer is always one hop from a live entity; each repointed entity gets its own correction_events row."""
 
 RENAME_ENTITY = """Change an entity's canonical_name. The prior name is preserved as an alias so historical references still resolve.
 
@@ -148,7 +148,7 @@ On empty result: N/A (this is a write). Errors if the entity is not merged.
 Cost: low.
 Idempotent: no — errors if merged_into is already null.
 Reversible: yes — re-run merge_entities, or consult the recorded correction_events row.
-Side effects: writes brain.entities.merged_into and brain.correction_events. Aliases that merge appended to the winner are intentionally left in place."""
+Side effects: writes brain.entities.merged_into and brain.correction_events. Entities that this entity's merge repointed at the winner are handed back to it, each with its own correction_events row. Reopens the merge_candidates row for the pair that was actually judged, which is not always the current merged_into. Aliases that merge appended to the winner are intentionally left in place."""
 
 UPDATE_EXPERIENCE = """Edit non-content fields on an experience: occurred_at, metadata, source_ref, visibility. content is immutable by spec — captures stay verbatim and corrections flow through claims.
 
