@@ -398,3 +398,38 @@ def test_relationships_to_after_a_chained_merge_is_flattened_by_path_compression
     }
     assert b_edge in reached
     assert a_edge in reached, "the twice-merged node's edges were lost"
+
+
+def test_relationships_to_after_init_23_flattens_a_preexisting_chain():
+    # The other half of the invariant. Path compression only constrains merges made
+    # after it shipped; the live brain carried six chains that predate it, four from
+    # #79's batch. init/22's member lookup is one level deep — it finds the entities
+    # pointing DIRECTLY at the survivor — so before init/23 runs, walking C sees B
+    # but not A, and A's edges stay invisible from every id in the group. Verified
+    # against the unflattened state: b_edge is reachable, a_edge is not. Seeded
+    # directly, because merge_entities refuses to build this state now.
+    from django.db import transaction
+
+    from openbrain.mcp.ledger import default_init_dir
+
+    c = _seed_entity(canonical_name="Preexisting Root")
+    b = _seed_entity(canonical_name="Preexisting Middle")
+    a = _seed_entity(canonical_name="Preexisting Leaf")
+    a_edge = _seed_entity(canonical_name="Preexisting Leaf Neighbor")
+    b_edge = _seed_entity(canonical_name="Preexisting Middle Neighbor")
+    _seed_claim(a, a_edge)
+    _seed_claim(b, b_edge)
+    _merge_entity(a, b)
+    _merge_entity(b, c)
+
+    sql = (default_init_dir() / "23-flatten-merge-chains.sql").read_text()
+    with transaction.atomic(), connection.cursor() as cur:
+        cur.execute(sql)
+
+    reached = {
+        r["entity_id"]
+        for r in relationships_to(c, max_hops=1, min_confidence=0)["related"]
+    }
+    assert a_edge in reached, "the leaf of a pre-existing chain stayed unreachable"
+    assert b_edge in reached
+    assert a not in reached and b not in reached

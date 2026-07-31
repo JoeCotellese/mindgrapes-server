@@ -718,6 +718,16 @@ entry to `SPINE` in `web/openbrain/mcp/boot.py`; (3) add the matching row to the
 `init/14` self-seed list (a unit test enforces SPINE ⇔ init files). Deploy:
 `brain_ledger migrate` applies it on existing volumes; fresh volumes get it from `init/`.
 
+A migration may carry **data** as well as DDL — `init/23-flatten-merge-chains.sql` is
+pure DML, repairing rows a code change depends on. Same rules, two additions: it must be
+idempotent against data it already fixed (resolve to the target state, don't assume a
+starting one), and it should verify its own postcondition and `raise exception` if the
+data can't be repaired. `migrate` runs one transaction per entry, so a raise rolls the
+attempt back and leaves the ledger row unwritten. Where a data repair is the precondition
+for a function change, ship them as adjacent entries: the boot gate refuses to serve
+while any manifest entry is pending, so no traffic reaches the new function until both
+are stamped.
+
 ### Known limitations / follow-ups
 
 - **No content-checksum drift detection** — editing an already-applied `init/` file is
