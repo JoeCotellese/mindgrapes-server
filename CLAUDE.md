@@ -87,6 +87,7 @@ per-use-case schemas) is `docs/design-overlay-architecture-2026-07-08.md`.
 
 ```
 /                    docker-compose (live/dev/staging), top-level config, Caddy, Tailscale
+.claude/skills/      project skills — `ready/` runs the backlog spec loop (/ready)
 bin/                 pg helper symlinked into ~/.local/bin by `make install`
 caddy/               edge config (TLS, path-split); Caddyfile + Caddyfile.dev
 config/              Postgres tuning overrides
@@ -101,6 +102,7 @@ web/                 the Django app + the Python MCP server (one codebase, Pytho
   config/            Django settings (base/production/docker/test*), asgi.py
   test layout        unit tests in */tests/unit; integration in */tests/integration
 docs/                deploy.md (operational), predicates.md (claim vocabulary),
+                     definition-of-ready.md (the bar a ticket clears before implementation),
                      design-overlay-architecture-2026-07-08.md (design record)
 tailscale/           sidecar config
 backups/             pg_dump outputs (gitignored content)
