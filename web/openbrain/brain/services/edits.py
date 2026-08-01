@@ -27,6 +27,7 @@ from openbrain.brain.db import (
     parse_json,
     record_correction,
     to_vector_literal,
+    write_experience,
 )
 from openbrain.brain.embeddings import embed_query
 from openbrain.brain.exceptions import ExperienceNotFound, NotOwner
@@ -68,33 +69,6 @@ _UPDATE_CONTENT_INPLACE_SQL = """
            embedding = %s::vector,
            metadata = %s::jsonb
      where id = %s::uuid
-"""
-
-# The superseding row inherits owner/account_id/visibility verbatim (#85) so a
-# content edit never silently re-privatizes a shared item or orphans ownership.
-# lat/lng (#43) carry forward the same way: editing a caption must not orphan the
-# geotag from the map, since only the live row is mappable.
-_INSERT_SUPERSEDING_SQL = """
-    insert into brain.experiences (
-        captured_at, occurred_at, source_kind, source_ref,
-        content, embedding, metadata, consolidation_status,
-        owner, account_id, visibility, lat, lng
-    ) values (
-        now(),
-        %s::timestamptz,
-        %s::brain.source_kind,
-        %s,
-        %s,
-        %s::vector,
-        %s::jsonb,
-        'pending'::brain.consolidation_status,
-        %s,
-        %s,
-        %s::brain.visibility,
-        %s,
-        %s
-    )
-    returning id::text as id
 """
 
 _SET_SUPERSEDED_BY_SQL = """
@@ -262,23 +236,26 @@ def _supersede(
     result,
 ):
     result["mode"] = "superseded"
-    cursor.execute(
-        _INSERT_SUPERSEDING_SQL,
-        [
-            before["occurred_at"],
-            before["source_kind"],
-            before["source_ref"],
-            content,
-            new_embedding_lit,
-            _json(merged_metadata),
-            before["owner"],
-            before["account_id"],
-            before["visibility"],
-            before["lat"],
-            before["lng"],
-        ],
+    # The superseding row inherits owner/account_id/visibility verbatim (#85) so a
+    # content edit never silently re-privatizes a shared item or orphans ownership.
+    # lat/lng (#43) carry forward the same way: editing a caption must not orphan the
+    # geotag from the map, since only the live row is mappable.
+    # source_kind likewise passes through untouched, including a null — the shared
+    # writer applies no default to it, precisely so this path cannot invent one.
+    new_id = write_experience(
+        cursor,
+        content=content,
+        embedding_lit=new_embedding_lit,
+        metadata=merged_metadata,
+        owner=before["owner"],
+        occurred_at=before["occurred_at"],
+        source_kind=before["source_kind"],
+        source_ref=before["source_ref"],
+        account_id=before["account_id"],
+        visibility=before["visibility"],
+        lat=before["lat"],
+        lng=before["lng"],
     )
-    new_id = dictfetchall(cursor)[0]["id"]
     result["new_id"] = new_id
     cursor.execute(_SET_SUPERSEDED_BY_SQL, [new_id, experience_id])
     cursor.execute(_CARRY_ATTACHMENTS_SQL, [new_id, experience_id])

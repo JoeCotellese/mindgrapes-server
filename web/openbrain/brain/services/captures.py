@@ -1,13 +1,17 @@
 # ABOUTME: capture_thought write service.
 # ABOUTME: Picks the bare vs structured path, embeds before the txn, returns the MCP structuredContent dict.
 
-import json
 
 from django.conf import settings
 from django.db import transaction
 from django.utils.module_loading import import_string
 
-from openbrain.brain.db import brain_cursor, dictfetchall, to_vector_literal
+from openbrain.brain.db import (
+    brain_cursor,
+    dictfetchall,
+    to_vector_literal,
+    write_experience,
+)
 from openbrain.brain.embeddings import embed_query
 from openbrain.brain.services.entity_resolver import (
     link_mention,
@@ -15,32 +19,13 @@ from openbrain.brain.services.entity_resolver import (
 )
 from openbrain.brain.services.reviews import open_provisional_binding_on_cursor
 
-# Same base columns + 'pending' status as edits.py's superseding insert. source_kind
-# and account_id/visibility coalesce to the brain defaults when null. lat/lng (#43)
-# are nullable geolocation columns: null when the caller gave neither params nor
-# usable EXIF, and never an error.
-_INSERT_EXPERIENCE_SQL = """
-    insert into brain.experiences (
-        captured_at, occurred_at, source_kind, source_ref,
-        content, embedding, metadata, consolidation_status,
-        owner, account_id, visibility, lat, lng
-    ) values (
-        now(),
-        %s::timestamptz,
-        coalesce(%s::brain.source_kind, 'manual'::brain.source_kind),
-        %s,
-        %s,
-        %s::vector,
-        %s::jsonb,
-        'pending'::brain.consolidation_status,
-        %s,
-        coalesce(%s, 'household'),
-        coalesce(%s::brain.visibility, 'private'::brain.visibility),
-        %s,
-        %s
-    )
-    returning id::text as id
-"""
+# The insert itself is db.write_experience, shared with edits.py's supersede path
+# (#6). What stays here is capture's own defaulting rule: an experience nobody
+# labelled arrived by hand. The table leaves source_kind nullable with no default,
+# so this cannot live in the shared writer — supersede must carry a null through.
+# lat/lng (#43) are nullable geolocation columns: null when the caller gave neither
+# params nor usable EXIF, and never an error.
+_DEFAULT_SOURCE_KIND = "manual"
 
 _FETCH_ENTITY_SQL = """
     select id::text as entity_id, kind::text as kind
@@ -158,23 +143,18 @@ def _bare_capture(
     full_metadata = {**metadata, "source": client, **(metadata_extra or {})}
 
     with transaction.atomic(), brain_cursor() as cursor:
-        cursor.execute(
-            _INSERT_EXPERIENCE_SQL,
-            [
-                None,  # occurred_at
-                None,  # source_kind → 'manual'
-                None,  # source_ref
-                content,
-                embedding_lit,
-                json.dumps(full_metadata),
-                owner,
-                account_id,
-                visibility,
-                lat,
-                lng,
-            ],
+        experience_id = write_experience(
+            cursor,
+            content=content,
+            embedding_lit=embedding_lit,
+            metadata=full_metadata,
+            owner=owner,
+            source_kind=_DEFAULT_SOURCE_KIND,
+            account_id=account_id,
+            visibility=visibility,
+            lat=lat,
+            lng=lng,
         )
-        experience_id = dictfetchall(cursor)[0]["id"]
         if after_insert is not None:
             after_insert(cursor, experience_id)
 
@@ -220,23 +200,22 @@ def _structured_capture(
         row_metadata.update(metadata_extra)
 
     with transaction.atomic(), brain_cursor() as cursor:
-        cursor.execute(
-            _INSERT_EXPERIENCE_SQL,
-            [
-                occurred_at,
-                source_kind,
-                source_ref,
-                content,
-                embedding_lit,
-                json.dumps(row_metadata),
-                owner,
-                account_id,
-                visibility,
-                lat,
-                lng,
-            ],
+        experience_id = write_experience(
+            cursor,
+            content=content,
+            embedding_lit=embedding_lit,
+            metadata=row_metadata,
+            owner=owner,
+            occurred_at=occurred_at,
+            source_kind=source_kind
+            if source_kind is not None
+            else _DEFAULT_SOURCE_KIND,
+            source_ref=source_ref,
+            account_id=account_id,
+            visibility=visibility,
+            lat=lat,
+            lng=lng,
         )
-        experience_id = dictfetchall(cursor)[0]["id"]
         extracted, borderline, needs_disambiguation = _resolve_participants(
             cursor, experience_id, embedding_lit, parts
         )

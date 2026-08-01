@@ -68,6 +68,92 @@ def to_vector_literal(embedding: list[float]) -> str:
     return "[" + ",".join(map(str, embedding)) + "]"
 
 
+# One definition of the experiences insert (#6). Capture and supersede both write
+# this exact row shape, and had their own copy of it — so a new column, or a change
+# to what the nullable ones default to, had to be made twice or silently diverge.
+#
+# No coalesce here, deliberately: the two callers do NOT share defaulting policy.
+# source_kind is nullable with no column default, and 'manual' is capture's rule,
+# not the table's — supersede must carry the original's value through untouched,
+# including a null. account_id and visibility are NOT NULL with column defaults
+# ('household', 'private'), which write_experience applies below so this SQL stays
+# a plain insert.
+#
+# Port target is the Node writeExperience (mcp/src/brain-write.ts).
+_INSERT_EXPERIENCE_SQL = """
+    insert into brain.experiences (
+        captured_at, occurred_at, source_kind, source_ref,
+        content, embedding, metadata, consolidation_status,
+        owner, account_id, visibility, lat, lng
+    ) values (
+        now(),
+        %s::timestamptz,
+        %s::brain.source_kind,
+        %s,
+        %s,
+        %s::vector,
+        %s::jsonb,
+        'pending'::brain.consolidation_status,
+        %s,
+        %s,
+        %s::brain.visibility,
+        %s,
+        %s
+    )
+    returning id::text as id
+"""
+
+_ACCOUNT_ID_DEFAULT = "household"
+_VISIBILITY_DEFAULT = "private"
+
+
+def write_experience(
+    cursor,
+    *,
+    content: str,
+    embedding_lit: str | None,
+    metadata,
+    owner: str | None = None,
+    occurred_at=None,
+    source_kind: str | None = None,
+    source_ref: str | None = None,
+    account_id: str | None = None,
+    visibility: str | None = None,
+    lat=None,
+    lng=None,
+) -> str:
+    """Insert one brain.experiences row on the caller's cursor; return its id.
+
+    The shared writer behind both capture and supersede. Cursor-based, so the
+    caller owns its transaction.atomic() — matching the rest of the services.
+
+    Rows always land consolidation_status='pending': every new experience owes
+    claim extraction, whichever path wrote it.
+
+    metadata is json-encoded here (None becomes {}) so callers stop hand-rolling
+    json.dumps at each site. account_id and visibility fall back to the brain
+    defaults when null, reproducing the coalesce the capture path used to carry in
+    its own SQL. source_kind is passed straight through: null is meaningful there.
+    """
+    cursor.execute(
+        _INSERT_EXPERIENCE_SQL,
+        [
+            occurred_at,
+            source_kind,
+            source_ref,
+            content,
+            embedding_lit,
+            json.dumps(metadata if metadata is not None else {}),
+            owner,
+            account_id if account_id is not None else _ACCOUNT_ID_DEFAULT,
+            visibility if visibility is not None else _VISIBILITY_DEFAULT,
+            lat,
+            lng,
+        ],
+    )
+    return cursor.fetchone()[0]
+
+
 _INSERT_CORRECTION_SQL = """
     insert into brain.correction_events (
         target_kind, target_id, before, after, reason, created_by
