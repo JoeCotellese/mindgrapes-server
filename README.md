@@ -133,6 +133,16 @@ Every tool description follows a strict template (capability, use-when,
 don't-use-when, on-empty, cost/idempotency) — the catalog lives in
 [`web/openbrain/mcp/descriptions.py`](web/openbrain/mcp/descriptions.py).
 
+## Client apps
+
+Mind Grapes is a server — capture surfaces live in their own repos:
+
+- [mindgrapes-extension](https://github.com/JoeCotellese/mindgrapes-extension) —
+  Chrome MV3 extension that bookmarks pages into Mind Grapes, summarizing the
+  current page and storing it as an experience
+- [mindgrapes-ios](https://github.com/JoeCotellese/mindgrapes-ios) — iOS,
+  watchOS, and Siri capture surface
+
 ## Roadmap & issues
 
 Features, bugs, and the roadmap live in
