@@ -7,7 +7,7 @@
 
 [project]
 name = "openbrain-web"
-version = "0.1.0"
+version = "2026.8.1"
 description = "Mind Grapes product layer: accounts, passkeys, OAuth AS (Django + HTMX)"
 requires-python = ">=3.12"
 dependencies = [

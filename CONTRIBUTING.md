@@ -83,4 +83,29 @@ abstractions.
    that way. A `pre-commit` trufflehog hook scans staged files for leaked keys
    and tokens; don't bypass it with `--no-verify`.
 
+## Releases
+
+Versions are date-based: `YYYY.M.Build`. `Build` starts at 1 and increments
+within the calendar month, resetting when the month rolls over — `2026.8.1`,
+`2026.8.2`, `2026.9.1`. The month is unpadded so the tag matches what PEP 440
+normalizes `web/pyproject.toml` to.
+
+There is no `CHANGELOG.md`. The commit history is the record of *what*
+changed, and GitHub generates the release notes from merged PRs. What history
+can't reconstruct is what an operator has to *do*, so every release body opens
+with an `## Upgrading` block covering new `init/NN-*.sql` migrations, new
+required `.env` keys, and any new compose services.
+
+To cut one:
+
+1. Branch `chore/release-<version>`.
+2. Set the version in `web/pyproject.toml` and `SERVER_VERSION` in
+   `web/openbrain/mcp/server.py` — the latter is what MCP clients see.
+3. Open the PR, let CI pass, merge.
+4. From `main`: `git tag -a v<version> -m "…"` and `git push origin v<version>`.
+5. `gh release create v<version> --generate-notes`, then edit the body to put
+   the `## Upgrading` block on top.
+
+Tags go to `origin` only.
+
 Security issues: do **not** open a public issue — see [SECURITY.md](SECURITY.md).

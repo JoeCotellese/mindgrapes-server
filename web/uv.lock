@@ -920,7 +920,7 @@ wheels = [
 
 [[package]]
 name = "openbrain-web"
-version = "0.1.0"
+version = "2026.8.1"
 source = { virtual = "." }
 dependencies = [
     { name = "authlib" },

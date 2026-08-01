@@ -19,7 +19,7 @@ from openbrain.mcp.tools.read_tools import register_read_tools
 from openbrain.mcp.tools.review_tools import register_review_tools
 
 SERVER_NAME = "open-brain"
-SERVER_VERSION = "0.1.0"
+SERVER_VERSION = "2026.8.1"
 
 
 def build_server(auth=None) -> FastMCP:
