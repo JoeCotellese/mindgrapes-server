@@ -991,6 +991,31 @@ def test_recommendation_survives_a_dual_channel_competitor():
 @override_settings(
     BRAIN_EMBED_FN="openbrain.brain.tests.integration.test_entities._query_embed"
 )
+def test_resolve_entity_seats_the_exact_match_first_in_candidates():
+    """#80: the tool's candidate list must honour init/21's exact-match promotion.
+
+    The wrapper re-sorted the function's output by fused_score, which put the
+    dual-channel competitor back on top. recommendation is banded off max(trgm)
+    across the whole result, so the response said 'reuse' while candidates[0] was
+    the wrong entity — and the tool description tells callers to take the top one.
+    """
+    exact, decoy = _seed_exact_and_dual_channel_decoy()
+
+    result = resolve_entity(name="Zoltan Kovacs", kind="person", top_k=5)
+
+    assert result["candidates"][0]["entity_id"] == exact
+    assert result["candidates"][0]["trgm_score"] == 1.0
+    # The competitor still outscores it on fusion — that is the displacement, and
+    # the point is that it no longer wins the seat.
+    by_id = {c["entity_id"]: c for c in result["candidates"]}
+    assert by_id[decoy]["fused_score"] > by_id[exact]["fused_score"]
+    # candidates[0] and recommendation must agree, which is the actual contract.
+    assert result["recommendation"] == "reuse"
+
+
+@override_settings(
+    BRAIN_EMBED_FN="openbrain.brain.tests.integration.test_entities._query_embed"
+)
 def test_top_k_1_caller_binds_the_exact_match_not_the_competitor():
     exact, decoy = _seed_exact_and_dual_channel_decoy()
     exp = _seed_experience()
