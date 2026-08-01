@@ -1004,6 +1004,12 @@ def resolve_entity(
 
     Embeds context_text (or the name itself) and ranks candidates via the
     brain.resolve_entity SQL function. Read-only.
+
+    Ranking is the function's, not ours (#80). This wrapper used to re-sort by
+    fused_score, which undid init/21's promotion of a perfect trgm match and put
+    the dual-channel competitor back on top — while recommendation, banded off
+    max(trgm) below, still said 'reuse'. candidates[0] and recommendation
+    disagreed, and the tool description tells callers to take candidates[0].
     """
     text = (context_text or "").strip() or name
     vec = to_vector_literal(embed_query(text))
@@ -1018,9 +1024,11 @@ def resolve_entity(
                    r.phon_match        as phon_match,
                    r.vec_score         as vec_score,
                    r.fused_score       as fused_score
-              from brain.resolve_entity(%s, %s::vector, %s::brain.entity_kind, %s) r
+              from brain.resolve_entity(%s, %s::vector, %s::brain.entity_kind, %s)
+                   with ordinality
+                   as r(entity_id, trgm_score, phon_match, vec_score, fused_score, ord)
               join brain.entities e on e.id = r.entity_id
-             order by r.fused_score desc, r.trgm_score desc
+             order by r.ord
             """,
             [name, vec, kind, top_k],
         )
