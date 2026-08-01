@@ -80,6 +80,22 @@ def _row(source_ref):
         return cur.fetchone()
 
 
+def _row_by_id(experience_id):
+    """Look a row up by the id the endpoint returned, not by its URL.
+
+    #54: source_ref is not unique. Any committed row sharing a URL shadows the
+    one written inside brain_write_txn, and fetchone() returns the stale one.
+    Tests that assert on *this* request's write must key off its id.
+    """
+    with connection.cursor() as cur:
+        cur.execute(
+            "select content, source_kind::text, metadata->>'source', source_ref "
+            "from brain.experiences where id = %s",
+            [experience_id],
+        )
+        return cur.fetchone()
+
+
 def test_bookmarking_the_article_stores_an_imported_experience(client):
     """The stop condition: bookmark the loops article, assert it's in the brain."""
     resp = _post(
@@ -92,11 +108,14 @@ def test_bookmarking_the_article_stores_an_imported_experience(client):
     assert body["summary"] == CANNED
     assert body["experience_id"]
 
-    row = _row(ARTICLE)
+    row = _row_by_id(body["experience_id"])
     assert row is not None
-    content, source_kind, source = row
+    content, source_kind, source, source_ref = row
     assert source_kind == "imported"
     assert content  # non-empty summary stored
+    # Keying off the id means nothing else proves the URL was stored, which the
+    # old lookup-by-source_ref got for free. Assert it directly.
+    assert source_ref == ARTICLE
     # #37: the writing client, not the transport MCP happens to use. source_kind
     # (how it was acquired) and this (who wrote it) are separate axes.
     assert source == "browser_extension"
