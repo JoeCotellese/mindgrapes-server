@@ -22,6 +22,14 @@ Read these first, in order:
 4. `gh issue view <related>` ... — context and dependents.
 5. [THE READING LIST FROM TRIAGE — name the specific files, and say which to read IN FULL]
 
+VERIFY THE TICKET'S OWN CITATIONS BEFORE YOU BUILD ON THEM.
+The issue's path:line references were true when it was filed and may not be now — files
+grow, functions move, and a fix sometimes lands without the ticket being closed. Open
+every citation that carries weight in your spec. A stale or false one is a FINDING to
+state plainly in the spec, not a premise to inherit. If the premise is dead — the defect
+no longer reproduces, the code already does the thing — say THAT and stop; do not spec
+work that is already done.
+
 THE TASK
 [State the decision the ticket defers, quoting the ticket.]
 YOU MUST MAKE THAT DECISION and defend it with what you find in the code, not with
@@ -32,17 +40,31 @@ Produce a spec satisfying every criterion. Pay disproportionate attention to:
 - [Any criterion the repo cares about unusually much — schema/migration registration,
   safety plans for production writes, test layer selection.]
 
-DO NOT modify any files. DO NOT post to GitHub. DO NOT run any command that writes to a
-database. Read-only investigation and a written spec, nothing else.
+DO NOT post to GitHub. DO NOT run any command that writes to a database. Read-only
+investigation and a written spec, nothing else.
+
+WRITE THE SPEC TO <SPEC_PATH>. That is the ONLY file you may write.
+It must start with the literal line `## Implementation spec` and read as if it were always
+part of the issue — no preamble, no closing commentary, no meta-commentary about being an
+agent. It gets appended verbatim under a horizontal rule.
+
+Write it ONCE, in a single Write call, at the end. Do your reading and verification first,
+then compose. Streaming partial versions leaves an unusable half-file if the run dies.
 
 RETURN VALUE
-Return ONLY the markdown body of the spec, starting with `## Implementation spec`. No
-preamble, no closing commentary. It will be appended verbatim to the GitHub issue under a
-horizontal rule, so it must read as if it were always part of the issue.
+Return ONLY a plain-text report, at most [N] lines: the decision you made, the schema-impact
+answer, and anything in the ticket's own citations you found stale. DO NOT return the spec
+text — it is already on disk, and routing it through the orchestrator's context costs more
+than the spec did.
 
-Cite real paths and line numbers you actually verified. If you could not verify something,
-say so explicitly in the spec rather than guessing.
+Cite real paths and line numbers you actually opened. If you could not verify something,
+say so explicitly in the spec rather than guessing. A fabricated citation is the worst
+failure mode here, and a reviewer will check every one.
 ```
+
+The spec goes to a file rather than the return value because the refuter reads it from a
+path anyway, and specs run tens of KB each. Returning them makes the orchestrator pay for
+every spec twice — once inbound, once writing it back out.
 
 ---
 
@@ -136,6 +158,9 @@ revision.
 
 Send this to the **original drafter**, resuming its context. Two things make it work:
 leading with what survived, and refusing to let it revise from a summary.
+
+Repeat the write-once instruction. A revision that dies mid-write is the one case where
+you can lose a good spec you already paid for.
 
 ```
 An adversarial reviewer went through your spec and verified your citations against the
