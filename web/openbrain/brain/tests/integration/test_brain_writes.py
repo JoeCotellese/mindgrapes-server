@@ -158,6 +158,65 @@ def test_edit_content_supersedes_and_inherits_owner_visibility():
     assert status == "pending"
 
 
+@override_settings(
+    BRAIN_EMBED_FN="openbrain.brain.tests.integration.test_brain_writes._embed_far"
+)
+def test_supersede_carries_a_null_source_kind_through_unchanged():
+    """#6: the shared writer must not apply capture's 'manual' default here.
+
+    source_kind is nullable with no column default, and 'an experience nobody
+    labelled arrived by hand' is capture's rule, not the table's. If the shared
+    insert coalesced it the way the capture path used to, editing the caption of a
+    row with no source_kind would silently invent provenance for it.
+    """
+    eid = _seed_experience(content="original thought")
+    assert (
+        _scalar(
+            "select source_kind::text from brain.experiences where id = %s::uuid", [eid]
+        )
+        is None
+    ), "fixture precondition: the seeded row has no source_kind"
+
+    result = edit_experience(VIEWER, eid, content="a wholly unrelated idea")
+
+    assert result["mode"] == "superseded"
+    assert (
+        _scalar(
+            "select source_kind::text from brain.experiences where id = %s::uuid",
+            [result["new_id"]],
+        )
+        is None
+    )
+
+
+@override_settings(
+    BRAIN_EMBED_FN="openbrain.brain.tests.integration.test_brain_writes._embed_far"
+)
+def test_supersede_carries_a_set_source_kind_through_unchanged():
+    eid = _seed_experience(content="original thought")
+    with connection.cursor() as cur:
+        cur.execute(
+            "update brain.experiences set source_kind = 'imported'::brain.source_kind, "
+            "source_ref = %s where id = %s::uuid",
+            ["https://example.test/article", eid],
+        )
+
+    result = edit_experience(VIEWER, eid, content="a wholly unrelated idea")
+
+    new_id = result["new_id"]
+    assert (
+        _scalar(
+            "select source_kind::text from brain.experiences where id = %s::uuid",
+            [new_id],
+        )
+        == "imported"
+    )
+    assert (
+        _scalar("select source_ref from brain.experiences where id = %s::uuid", [new_id])
+        == "https://example.test/article"
+    )
+
+
 def test_soft_delete_sets_deleted_at_and_retracts_sole_source_claim():
     eid = _seed_experience()
     claim_id = _seed_claim_sourced_only_by(eid)
