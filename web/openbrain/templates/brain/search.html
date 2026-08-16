@@ -2,6 +2,17 @@
 {% load static %}
 {% block title %}Search — Mind Grapes{% endblock %}
 {% block main_column %}is-10{% endblock %}
+{% block extra_head %}
+  <style>
+    @media (max-width: 480px) {
+      /* Entity chips are links; base.html only lifts .tag.is-medium, not plain a.tag. */
+      #results .tags a.tag { height: auto; min-height: 44px; }
+      /* Search input + submit share a has-addons row; grow both to the 44px floor. */
+      form[role="search"] .input,
+      form[role="search"] .button { min-height: 44px; height: auto; }
+    }
+  </style>
+{% endblock %}
 {% block content %}
   <h1 class="title is-4">Search</h1>
 
