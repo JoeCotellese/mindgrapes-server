@@ -2,6 +2,17 @@
 {% block title %}Experience — Mind Grapes{% endblock %}
 {# CSRF on every htmx write (delete modal, visibility toggle) for this page. #}
 {% block body_attrs %} hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'{% endblock %}
+{% block extra_head %}
+  <style>
+    /* Phone tap-target floor (WCAG 2.5.5): Bulma .is-small buttons render ~32px
+       tall. Edit / Delete / the visibility toggle are this page's primary
+       controls, and the Metadata summary is a bare ~20px text line. Lift both. */
+    @media (max-width: 480px) {
+      .button.is-small { min-height: 44px; }
+      details > summary { padding-block: 0.7rem; }
+    }
+  </style>
+{% endblock %}
 {% block content %}
   <h1 class="title is-4">Experience</h1>
 
