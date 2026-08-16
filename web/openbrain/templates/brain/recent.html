@@ -16,6 +16,13 @@
     /* Timeline rail: a thin left border reads as a spine without heavy chrome. */
     #feed-list section { border-left: 2px solid var(--bulma-border); padding-left: 1rem; margin-bottom: 1.5rem; }
     #feed-list section h2.title { margin-bottom: 0.75rem; }
+    /* Phone touch targets: plain feed tag links, the tabs, and Load-more all
+       render under the 44px floor (the base.html rule only lifts .is-medium). */
+    @media (max-width: 480px) {
+      .feed a.tag { min-height: 44px; }
+      .tabs li a { min-height: 44px; }
+      #feed-more { min-height: 44px; }
+    }
   </style>
 {% endblock %}
 {% block content %}
