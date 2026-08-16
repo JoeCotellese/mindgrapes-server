@@ -1,5 +1,15 @@
 {% extends "base.html" %}
 {% block title %}Edit experience — Mind Grapes{% endblock %}
+{% block extra_head %}
+  <style>
+    /* Bulma buttons render at a fixed 2.5em (~40px) height, below the 44px
+       touch-target floor. Grow the edit-form actions on phones. Cancel is an
+       <a class="button">, so a near-miss silently does nothing — worth the lift. */
+    @media (max-width: 480px) {
+      .field.is-grouped .button { height: auto; min-height: 44px; }
+    }
+  </style>
+{% endblock %}
 {% block content %}
   <h1 class="title is-4">Edit experience</h1>
 

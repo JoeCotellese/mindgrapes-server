@@ -16,6 +16,12 @@
     /* The before/after expander reads as a quiet inline control, not a button. */
     #activity-list details > summary { cursor: pointer; }
     #activity-list pre { white-space: pre-wrap; word-break: break-word; }
+    /* Phone touch targets: pad the disclosure summary and lift Load-more to the
+       44px floor. Padding (not flex) keeps the native disclosure triangle. */
+    @media (max-width: 480px) {
+      #activity-list details > summary { min-height: 44px; padding-top: 12px; padding-bottom: 12px; }
+      #activity-more { min-height: 44px; }
+    }
   </style>
 {% endblock %}
 {% block content %}

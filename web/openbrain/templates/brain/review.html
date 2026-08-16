@@ -14,6 +14,17 @@
       border-radius: 9999px; content: ""; display: block; height: 1em; width: 1em;
       position: absolute; left: calc(50% - 0.5em); top: calc(50% - 0.5em);
     }
+    /* Phones: Bulma's .level.is-mobile pins the identity text and the decision
+       buttons side by side at every width, overflowing the viewport (WCAG 1.4.10).
+       Stack them, let the button group wrap, and lift buttons to the 44px floor. */
+    @media (max-width: 480px) {
+      #review-list .level.is-mobile { display: block; }
+      #review-list .level.is-mobile .level-left,
+      #review-list .level.is-mobile .level-right { display: block; margin: 0; }
+      #review-list .level.is-mobile .level-right { margin-top: 0.75rem; }
+      #review-list .buttons { flex-wrap: wrap; }
+      #review-list .buttons .button { flex: 1 1 auto; min-height: 44px; }
+    }
   </style>
 {% endblock %}
 {% block content %}

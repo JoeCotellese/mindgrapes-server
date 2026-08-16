@@ -14,7 +14,13 @@
        a.navbar-item color rule wins and leaves the active item's label dark on
        its blue fill. Force white for legible contrast (every active nav item). */
     a.navbar-item.is-active { color: #fff; }
-  </style>
+    /* Bulma tags render at a fixed 2em (~32px) height, below the 44px touch
+       target floor. On phones the tag chips are load-bearing navigation
+       (dashboard entities/topics, entity/search results), so grow them. */
+    @media (max-width: 480px) {
+      .tags .tag.is-medium { height: auto; min-height: 44px; }
+    }
+</style>
   {% block extra_head %}{% endblock %}
 </head>
 <body{% block body_attrs %}{% endblock %}>

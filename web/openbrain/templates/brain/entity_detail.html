@@ -2,6 +2,16 @@
 {% load static %}
 {% block title %}{% if is_merged %}Merged entity{% else %}{{ entity.canonical_name }}{% endif %} — Mind Grapes{% endblock %}
 {% block main_column %}is-8{% endblock %}
+{% block extra_head %}
+  <style>
+    /* Each mention card's date is a standalone "open this experience" link alone
+       on its line, so the WCAG 2.5.8 inline exception doesn't apply — grow its
+       hit area to the 44px floor on phones without widening past the date text. */
+    @media (max-width: 480px) {
+      .box > p.is-size-7 > a { display: inline-flex; align-items: center; min-height: 44px; }
+    }
+  </style>
+{% endblock %}
 {% block content %}
   {% if is_merged %}
     <h1 class="title is-4">Merged entity</h1>
