@@ -310,6 +310,48 @@ def test_same_idempotency_key_replays_without_reembedding_or_reput(client, monke
         assert cur.fetchone()[0] == 1  # one attachment, not two
 
 
+def test_image_race_loser_returns_the_winners_response_not_its_own_ids(
+    client, monkeypatch
+):
+    # The image-door race (acceptance criterion 2): a losing concurrent submit must
+    # return the WINNER's four-field response, not its own attachment_id/object_key
+    # (which were inserted then rolled back and reference no row). Simulated
+    # deterministically: seed the winner's row, then force capture_image's early
+    # lookup to miss so the inner capture()'s dedup is what discovers the winner —
+    # exactly the race window. Reverted to overwriting result with local ids, the
+    # attachment_id/object_key/byte_len assertions fail.
+    import json
+    import uuid
+
+    from openbrain.brain.services import image_captures
+
+    owner = "itest-image-sub"  # the default _bearer() subject
+    key = "itest-img-race-key"
+    winner = {
+        "experience_id": str(uuid.uuid4()),
+        "attachment_id": "winner-attachment-0001",
+        "object_key": "household/deadbeefdeadbeef.webp",
+        "byte_len": 4242,
+    }
+    with connection.cursor() as cur:
+        cur.execute(
+            "insert into brain.capture_idempotency (owner, idempotency_key, response) "
+            "values (%s, %s, %s::jsonb)",
+            [owner, key, json.dumps(winner)],
+        )
+    monkeypatch.setattr(image_captures, "lookup_idempotent", lambda *a, **k: None)
+
+    before = _experience_count()
+    resp = _post(client, {"image": _upload(), "idempotency_key": key})
+    assert resp.status_code == 200, resp.content
+    body = resp.json()
+    assert body["experience_id"] == winner["experience_id"]
+    assert body["attachment_id"] == winner["attachment_id"]
+    assert body["object_key"] == winner["object_key"]
+    assert body["byte_len"] == winner["byte_len"]
+    assert _experience_count() == before  # the loser wrote no experience
+
+
 def _experience_count() -> int:
     with connection.cursor() as cur:
         cur.execute("select count(*) from brain.experiences")

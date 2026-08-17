@@ -415,9 +415,11 @@ def capture_image(
             "byte_len": blob.byte_len,
         },
     )
-    result["attachment_id"] = attachment_id
-    result["object_key"] = blob.key
-    result["byte_len"] = blob.byte_len
+    # The four-field shape is carried by response_extra above, which capture()
+    # merges into both the returned dict and the stored response. Do NOT re-stamp
+    # it here: on an idempotent replay (Phase 1 hit, or a Phase 2 race the loser),
+    # result is the WINNER's stored response, and overwriting it with this call's
+    # rolled-back attachment_id would hand the client an id that references no row.
     return result
 
 
