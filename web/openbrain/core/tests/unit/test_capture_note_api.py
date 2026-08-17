@@ -269,3 +269,35 @@ def test_success_returns_experience_id(client, service):
 def test_owner_is_the_token_subject(client, service):
     _post(client, {"content": "note"}, _bearer(sub="member-42"))
     assert service["owner"] == "member-42"
+
+
+# Idempotency key (#59) ----------------------------------------------------
+
+
+def test_idempotency_key_is_forwarded_when_present(client, service):
+    resp = _post(client, {"content": "note", "idempotency_key": "abc-123"})
+    assert resp.status_code == 200
+    assert service["idempotency_key"] == "abc-123"
+
+
+def test_absent_idempotency_key_forwards_none(client, service):
+    resp = _post(client, {"content": "note"})
+    assert resp.status_code == 200
+    assert service["idempotency_key"] is None
+
+
+def test_idempotency_key_is_stripped(client, service):
+    _post(client, {"content": "note", "idempotency_key": "  abc  "})
+    assert service["idempotency_key"] == "abc"
+
+
+def test_empty_idempotency_key_is_400_and_never_calls_service(client, service):
+    resp = _post(client, {"content": "note", "idempotency_key": "   "})
+    assert resp.status_code == 400
+    assert service == {}
+
+
+def test_non_string_idempotency_key_is_400(client, service):
+    resp = _post(client, {"content": "note", "idempotency_key": 123})
+    assert resp.status_code == 400
+    assert service == {}

@@ -232,6 +232,20 @@ def _occurred_at(raw: str) -> str | None:
     return text
 
 
+def _idempotency_key(raw) -> str | None:
+    """The client's dedup key (#59): absent -> None; present -> a non-empty string.
+
+    Shared by both doors. Absent (None / missing field) preserves today's no-dedup
+    behavior; a present-but-empty value is a 400, not a silent fallthrough, so a
+    client that meant to dedup and sent junk learns it did not.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, str) or not raw.strip():
+        raise ValueError("idempotency_key must be a non-empty string")
+    return raw.strip()
+
+
 def _location(post) -> dict | None:
     """{lat, lng} from the form, or None. EXIF fills the gap when absent."""
     lat_raw = (post.get("lat") or "").strip()
@@ -270,6 +284,7 @@ def _image_fields(post) -> dict:
         "location": _location(post),
         "participants": _participants(post.get("people") or ""),
         "metadata": {"labels": labels} if labels else None,
+        "idempotency_key": _idempotency_key(post.get("idempotency_key")),
     }
 
 
@@ -378,6 +393,7 @@ def _note_fields(payload: dict) -> dict:
         "lat": loc["lat"] if loc else None,
         "lng": loc["lng"] if loc else None,
         "metadata_extra": {"labels": labels} if labels else None,
+        "idempotency_key": _idempotency_key(payload.get("idempotency_key")),
     }
 
 

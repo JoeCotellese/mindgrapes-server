@@ -91,7 +91,9 @@ def _bearer(sub="itest-image-sub"):
 
 def _post(client, data=None, headers=None):
     payload = {"image": _upload()} if data is None else data
-    return client.post(URL, data=payload, **(headers if headers is not None else _bearer()))
+    return client.post(
+        URL, data=payload, **(headers if headers is not None else _bearer())
+    )
 
 
 def _attachment_rows(experience_id):
@@ -145,7 +147,9 @@ def test_multipart_post_writes_experience_attachment_and_blob(client):
 
 @override_settings(BRAIN_EMBED_FN=EMBED)
 def test_stored_object_bytes_match_the_recorded_length(client):
-    body = _post(client, {"image": _upload(), "description": "a small blue image"}).json()
+    body = _post(
+        client, {"image": _upload(), "description": "a small blue image"}
+    ).json()
     store = blobstore.get_blobstore()
     stored = store.get(body["object_key"])
     assert len(stored) == body["byte_len"]
@@ -198,8 +202,12 @@ def test_geo_event_and_people_land_on_the_row(client):
 @override_settings(BRAIN_EMBED_FN=EMBED)
 def test_same_photo_twice_dedups_to_one_blob(client):
     raw = _png(color=(7, 7, 7))
-    first = _post(client, {"image": _upload(raw), "description": "first caption"}).json()
-    second = _post(client, {"image": _upload(raw), "description": "second caption"}).json()
+    first = _post(
+        client, {"image": _upload(raw), "description": "first caption"}
+    ).json()
+    second = _post(
+        client, {"image": _upload(raw), "description": "second caption"}
+    ).json()
     assert first["object_key"] == second["object_key"]  # content-addressed
     with connection.cursor() as cur:
         cur.execute(
@@ -218,7 +226,9 @@ def test_get_experience_detail_exposes_a_presigned_url(client):
 
     sub = "itest-image-owner"
     body = _post(
-        client, {"image": _upload(), "description": "a photo to read back"}, _bearer(sub)
+        client,
+        {"image": _upload(), "description": "a photo to read back"},
+        _bearer(sub),
     ).json()
     detail = reads.get_experience_detail(sub, body["experience_id"])
     block = detail["attachment"]
@@ -251,10 +261,53 @@ def test_oversize_upload_is_rejected_and_writes_nothing(client, settings):
 def test_non_image_upload_is_rejected_and_writes_nothing(client):
     before = _experience_count()
     resp = _post(
-        client, {"image": _upload(b"this is not an image at all"), "description": "nope"}
+        client,
+        {"image": _upload(b"this is not an image at all"), "description": "nope"},
     )
     assert resp.status_code == 415
     assert _experience_count() == before
+
+
+@override_settings(BRAIN_EMBED_FN=EMBED)
+def test_same_idempotency_key_replays_without_reembedding_or_reput(client, monkeypatch):
+    # The lost-ACK retry on the image door: the replay returns the identical
+    # four-field payload and does NOT re-run the expensive vision/embed/S3-put
+    # pipeline. Reverted, the second POST re-embeds, re-puts, and creates a second
+    # experience/attachment; every assertion below fails.
+    from openbrain.brain.services import image_captures
+
+    calls = {"embed": 0, "put": 0}
+    real_embed = image_captures.embed_query
+    # get_blobstore() returns a fresh instance each call, so patch the class method
+    # (the memory fake shares its backing store across instances).
+    store_cls = type(blobstore.get_blobstore())
+    real_put = store_cls.put
+
+    def _counting_embed(text):
+        calls["embed"] += 1
+        return real_embed(text)
+
+    def _counting_put(self, *args, **kwargs):
+        calls["put"] += 1
+        return real_put(self, *args, **kwargs)
+
+    monkeypatch.setattr(image_captures, "embed_query", _counting_embed)
+    monkeypatch.setattr(store_cls, "put", _counting_put)
+
+    raw = _png(color=(3, 9, 27))
+    fields = {"description": "idempotent image", "idempotency_key": "itest-idem-img-a"}
+    r1 = _post(client, {"image": _upload(raw), **fields})
+    r2 = _post(client, {"image": _upload(raw), **fields})
+    assert r1.status_code == 200 and r2.status_code == 200, (r1.content, r2.content)
+    assert r1.json() == r2.json()  # identical four-field payload
+    assert calls["embed"] == 1  # the replay did not re-embed
+    assert calls["put"] == 1  # the replay did not re-put to the store
+    with connection.cursor() as cur:
+        cur.execute(
+            "select count(*) from brain.attachments where experience_id = %s::uuid",
+            [r1.json()["experience_id"]],
+        )
+        assert cur.fetchone()[0] == 1  # one attachment, not two
 
 
 def _experience_count() -> int:
